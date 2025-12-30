@@ -167,6 +167,7 @@ impl<T: Transport> Client<T> {
             }
 
             // Send request
+            tracing::trace!(snmp.bytes = data.len(), "sending request");
             self.inner.transport.send(data).await?;
 
             // Wait for response
@@ -177,6 +178,8 @@ impl<T: Transport> Client<T> {
                 .await
             {
                 Ok((response_data, _source)) => {
+                    tracing::trace!(snmp.bytes = response_data.len(), "received response");
+
                     // Decode response and extract PDU
                     let response = Message::decode(response_data)?;
 
@@ -250,6 +253,13 @@ impl<T: Transport> Client<T> {
             return self.send_v3_and_recv(pdu).await;
         }
 
+        tracing::debug!(
+            snmp.pdu_type = ?pdu.pdu_type,
+            snmp.varbind_count = pdu.varbinds.len(),
+            "sending {} request",
+            pdu.pdu_type
+        );
+
         let request_id = pdu.request_id;
         let message = CommunityMessage::new(
             self.inner.config.version,
@@ -257,7 +267,18 @@ impl<T: Transport> Client<T> {
             pdu,
         );
         let data = message.encode();
-        self.send_and_recv(request_id, &data).await
+        let response = self.send_and_recv(request_id, &data).await?;
+
+        tracing::debug!(
+            snmp.pdu_type = ?response.pdu_type,
+            snmp.varbind_count = response.varbinds.len(),
+            snmp.error_status = response.error_status,
+            snmp.error_index = response.error_index,
+            "received {} response",
+            response.pdu_type
+        );
+
+        Ok(response)
     }
 
     /// Send a GETBULK request and wait for response.
@@ -274,13 +295,31 @@ impl<T: Transport> Client<T> {
             return self.send_v3_and_recv(pdu).await;
         }
 
+        tracing::debug!(
+            snmp.non_repeaters = pdu.non_repeaters,
+            snmp.max_repetitions = pdu.max_repetitions,
+            snmp.varbind_count = pdu.varbinds.len(),
+            "sending GetBulkRequest"
+        );
+
         let request_id = pdu.request_id;
         let data = CommunityMessage::encode_bulk(
             self.inner.config.version,
             self.inner.config.community.clone(),
             &pdu,
         );
-        self.send_and_recv(request_id, &data).await
+        let response = self.send_and_recv(request_id, &data).await?;
+
+        tracing::debug!(
+            snmp.pdu_type = ?response.pdu_type,
+            snmp.varbind_count = response.varbinds.len(),
+            snmp.error_status = response.error_status,
+            snmp.error_index = response.error_index,
+            "received {} response",
+            response.pdu_type
+        );
+
+        Ok(response)
     }
 
     /// GET a single OID.
@@ -334,9 +373,23 @@ impl<T: Transport> Client<T> {
         }
 
         // Batched path: split into chunks
+        let num_batches = (oids.len() + max_per_request - 1) / max_per_request;
+        tracing::debug!(
+            snmp.oid_count = oids.len(),
+            snmp.max_per_request = max_per_request,
+            snmp.batch_count = num_batches,
+            "splitting GET request into batches"
+        );
+
         let mut all_results = Vec::with_capacity(oids.len());
 
-        for chunk in oids.chunks(max_per_request) {
+        for (batch_idx, chunk) in oids.chunks(max_per_request).enumerate() {
+            tracing::debug!(
+                snmp.batch = batch_idx + 1,
+                snmp.batch_total = num_batches,
+                snmp.batch_oid_count = chunk.len(),
+                "sending GET batch"
+            );
             let request_id = self.next_request_id();
             let pdu = Pdu::get_request(request_id, chunk);
             let response = self.send_request(pdu).await?;
@@ -396,9 +449,23 @@ impl<T: Transport> Client<T> {
         }
 
         // Batched path: split into chunks
+        let num_batches = (oids.len() + max_per_request - 1) / max_per_request;
+        tracing::debug!(
+            snmp.oid_count = oids.len(),
+            snmp.max_per_request = max_per_request,
+            snmp.batch_count = num_batches,
+            "splitting GETNEXT request into batches"
+        );
+
         let mut all_results = Vec::with_capacity(oids.len());
 
-        for chunk in oids.chunks(max_per_request) {
+        for (batch_idx, chunk) in oids.chunks(max_per_request).enumerate() {
+            tracing::debug!(
+                snmp.batch = batch_idx + 1,
+                snmp.batch_total = num_batches,
+                snmp.batch_oid_count = chunk.len(),
+                "sending GETNEXT batch"
+            );
             let request_id = self.next_request_id();
             let pdu = Pdu::get_next_request(request_id, chunk);
             let response = self.send_request(pdu).await?;
@@ -463,9 +530,23 @@ impl<T: Transport> Client<T> {
         }
 
         // Batched path: split into chunks
+        let num_batches = (varbinds.len() + max_per_request - 1) / max_per_request;
+        tracing::debug!(
+            snmp.oid_count = varbinds.len(),
+            snmp.max_per_request = max_per_request,
+            snmp.batch_count = num_batches,
+            "splitting SET request into batches"
+        );
+
         let mut all_results = Vec::with_capacity(varbinds.len());
 
-        for chunk in varbinds.chunks(max_per_request) {
+        for (batch_idx, chunk) in varbinds.chunks(max_per_request).enumerate() {
+            tracing::debug!(
+                snmp.batch = batch_idx + 1,
+                snmp.batch_total = num_batches,
+                snmp.batch_oid_count = chunk.len(),
+                "sending SET batch"
+            );
             let request_id = self.next_request_id();
             let vbs: Vec<VarBind> = chunk
                 .iter()

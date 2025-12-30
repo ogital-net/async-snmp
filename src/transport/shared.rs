@@ -129,11 +129,22 @@ impl SharedUdpTransport {
             loop {
                 match inner.socket.recv_from(&mut buf).await {
                     Ok((len, source)) => {
+                        tracing::trace!(
+                            snmp.source = %source,
+                            snmp.bytes = len,
+                            "shared transport received packet"
+                        );
+
                         let data = Bytes::copy_from_slice(&buf[..len]);
 
                         // Extract request_id from response
                         // SNMP response has request_id at a known offset after the header
                         if let Some(request_id) = extract_request_id(&data) {
+                            tracing::trace!(
+                                snmp.request_id = request_id,
+                                snmp.source = %source,
+                                "extracted request_id from response"
+                            );
                             let pending_req = inner.pending.lock().unwrap().remove(&request_id);
                             if let Some(pending_req) = pending_req {
                                 // Warn if source doesn't match target
@@ -221,6 +232,8 @@ impl SharedUdpTransportBuilder {
     ///
     /// For IPv6 bind addresses, the socket has `IPV6_V6ONLY` set to true.
     pub async fn build(self) -> Result<SharedUdpTransport> {
+        tracing::debug!(bind_addr = %self.bind_addr, "building shared UDP transport");
+
         let bind_addr: SocketAddr = self.bind_addr.parse().map_err(|_| Error::Io {
             target: None,
             source: std::io::Error::new(
@@ -252,6 +265,12 @@ impl SharedUdpTransportBuilder {
             // Use absolute value to avoid starting negative (though negative IDs are valid)
             nanos.wrapping_abs().max(1)
         };
+
+        tracing::debug!(
+            snmp.local_addr = %local_addr,
+            snmp.initial_request_id = initial_request_id,
+            "shared UDP transport bound"
+        );
 
         let inner = Arc::new(SharedUdpTransportInner {
             socket,
@@ -287,6 +306,11 @@ pub struct SharedUdpHandle {
 
 impl Transport for SharedUdpHandle {
     async fn send(&self, data: &[u8]) -> Result<()> {
+        tracing::trace!(
+            snmp.target = %self.target,
+            snmp.bytes = data.len(),
+            "shared UDP send"
+        );
         self.inner
             .socket
             .send_to(data, self.target)
@@ -299,6 +323,13 @@ impl Transport for SharedUdpHandle {
     }
 
     async fn recv(&self, request_id: i32, timeout: Duration) -> Result<(Bytes, SocketAddr)> {
+        tracing::trace!(
+            snmp.target = %self.target,
+            snmp.request_id = request_id,
+            snmp.timeout_ms = timeout.as_millis() as u64,
+            "shared UDP recv waiting"
+        );
+
         let (tx, rx) = oneshot::channel();
         let deadline = Instant::now() + timeout;
 
@@ -314,9 +345,22 @@ impl Transport for SharedUdpHandle {
 
         // Wait for response with timeout
         match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(response)) => Ok(response),
+            Ok(Ok((data, source))) => {
+                tracing::trace!(
+                    snmp.target = %self.target,
+                    snmp.source = %source,
+                    snmp.bytes = data.len(),
+                    "shared UDP recv complete"
+                );
+                Ok((data, source))
+            }
             Ok(Err(_)) => {
                 // Channel closed (shouldn't happen normally)
+                tracing::trace!(
+                    snmp.target = %self.target,
+                    snmp.request_id = request_id,
+                    "shared UDP recv channel closed"
+                );
                 self.inner.pending.lock().unwrap().remove(&request_id);
                 Err(Error::Timeout {
                     target: Some(self.target),
@@ -327,6 +371,11 @@ impl Transport for SharedUdpHandle {
             }
             Err(_) => {
                 // Timeout
+                tracing::trace!(
+                    snmp.target = %self.target,
+                    snmp.request_id = request_id,
+                    "shared UDP recv timeout"
+                );
                 self.inner.pending.lock().unwrap().remove(&request_id);
                 Err(Error::Timeout {
                     target: Some(self.target),

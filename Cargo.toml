@@ -18,6 +18,12 @@ thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["net", "time", "sync", "rt", "rt-multi-thread", "macros", "io-util"] }
 tracing = "0.1.44"
 
+# CLI dependencies (optional)
+clap = { version = "4", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
 # V3 crypto dependencies
 aes = "0.8.4"
 subtle = "2.6"
@@ -43,5 +49,21 @@ async-snmp = { path = ".", features = ["testing"] }
 [features]
 default = []
 testing = []  # Expose MockTransport for downstream testing
+cli = ["dep:clap", "dep:serde", "dep:serde_json", "dep:tracing-subscriber"]  # CLI utilities
 tls = []      # Future: SNMP over TLS (RFC 6353)
 dtls = []     # Future: SNMP over DTLS (RFC 6353)
+
+[[bin]]
+name = "asnmp-get"
+path = "src/bin/asnmp_get.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "asnmp-walk"
+path = "src/bin/asnmp_walk.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "asnmp-set"
+path = "src/bin/asnmp_set.rs"
+required-features = ["cli"]

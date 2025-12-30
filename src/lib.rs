@@ -70,6 +70,9 @@ pub mod version;
 
 pub(crate) mod util;
 
+#[cfg(feature = "cli")]
+pub mod cli;
+
 // Re-exports for convenience
 pub use agent::{Agent, AgentBuilder, VacmBuilder, VacmConfig, View};
 pub use client::{

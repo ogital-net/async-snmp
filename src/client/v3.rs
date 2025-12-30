@@ -70,17 +70,32 @@ impl V3SecurityConfig {
 
     /// Derive localized keys for a specific engine ID.
     pub fn derive_keys(&self, engine_id: &[u8]) -> V3DerivedKeys {
+        tracing::trace!(
+            engine_id_len = engine_id.len(),
+            has_auth = self.auth.is_some(),
+            has_priv = self.privacy.is_some(),
+            "deriving localized keys"
+        );
+
         let auth_key = self.auth.as_ref().map(|(protocol, password)| {
+            tracing::trace!(auth_protocol = ?protocol, "deriving auth key");
             LocalizedKey::from_password(*protocol, password, engine_id)
         });
 
         let priv_key = match (&self.auth, &self.privacy) {
-            (Some((auth_protocol, _)), Some((priv_protocol, priv_password))) => Some(
-                PrivKey::from_password(*auth_protocol, *priv_protocol, priv_password, engine_id),
-            ),
+            (Some((auth_protocol, _)), Some((priv_protocol, priv_password))) => {
+                tracing::trace!(priv_protocol = ?priv_protocol, "deriving privacy key");
+                Some(PrivKey::from_password(
+                    *auth_protocol,
+                    *priv_protocol,
+                    priv_password,
+                    engine_id,
+                ))
+            }
             _ => None,
         };
 
+        tracing::trace!("key derivation complete");
         V3DerivedKeys { auth_key, priv_key }
     }
 }
@@ -209,6 +224,8 @@ impl<T: Transport> Client<T> {
 
         // Handle encryption if needed
         let (msg_data, priv_params) = if security_level.requires_priv() {
+            tracing::trace!("encrypting scoped PDU");
+
             // Get mutable priv_key - we need interior mutability for salt counter
             // Since PrivKey uses internal counter, we need to clone and use
             let derived_ref = derived
@@ -230,6 +247,12 @@ impl<T: Transport> Client<T> {
                 engine_time,
                 Some(&self.inner.salt_counter),
             )?;
+
+            tracing::trace!(
+                plaintext_len = scoped_pdu_bytes.len(),
+                ciphertext_len = ciphertext.len(),
+                "encrypted scoped PDU"
+            );
 
             (crate::message::V3MessageData::Encrypted(ciphertext), salt)
         } else {
@@ -285,6 +308,8 @@ impl<T: Transport> Client<T> {
 
         // Apply authentication if needed
         if security_level.requires_auth() {
+            tracing::trace!("applying HMAC authentication");
+
             let auth_key = derived
                 .as_ref()
                 .and_then(|d| d.auth_key.as_ref())
@@ -293,6 +318,11 @@ impl<T: Transport> Client<T> {
             // Find auth params position and apply HMAC
             if let Some((offset, len)) = UsmSecurityParams::find_auth_params_offset(&encoded) {
                 authenticate_message(auth_key, &mut encoded, offset, len);
+                tracing::trace!(
+                    auth_params_offset = offset,
+                    auth_params_len = len,
+                    "applied HMAC authentication"
+                );
             } else {
                 return Err(Error::encode(EncodeErrorKind::MissingAuthParams));
             }
@@ -343,6 +373,15 @@ impl<T: Transport> Client<T> {
             // Build message (may need fresh timestamps on retry)
             let (data, msg_id) = self.build_v3_message(&pdu)?;
 
+            tracing::debug!(
+                snmp.pdu_type = ?pdu.pdu_type,
+                snmp.varbind_count = pdu.varbinds.len(),
+                snmp.msg_id = msg_id,
+                "sending V3 {} request",
+                pdu.pdu_type
+            );
+            tracing::trace!(snmp.bytes = data.len(), "sending V3 request");
+
             // Send request
             self.inner.transport.send(&data).await?;
 
@@ -354,8 +393,12 @@ impl<T: Transport> Client<T> {
                 .await
             {
                 Ok((response_data, _source)) => {
+                    tracing::trace!(snmp.bytes = response_data.len(), "received V3 response");
+
                     // Verify authentication if required
                     if security_level.requires_auth() {
+                        tracing::trace!("verifying HMAC authentication on response");
+
                         let derived = self.inner.derived_keys.read().unwrap();
                         let auth_key = derived
                             .as_ref()
@@ -368,11 +411,17 @@ impl<T: Transport> Client<T> {
                             UsmSecurityParams::find_auth_params_offset(&response_data)
                         {
                             if !verify_message(auth_key, &response_data, offset, len) {
+                                tracing::trace!("HMAC verification failed");
                                 return Err(Error::auth(
                                     Some(self.peer_addr()),
                                     AuthErrorKind::HmacMismatch,
                                 ));
                             }
+                            tracing::trace!(
+                                auth_params_offset = offset,
+                                auth_params_len = len,
+                                "HMAC verification successful"
+                            );
                         } else {
                             return Err(Error::auth(
                                 Some(self.peer_addr()),
@@ -429,6 +478,11 @@ impl<T: Transport> Client<T> {
                     let response_pdu = if security_level.requires_priv() {
                         match response.data {
                             crate::message::V3MessageData::Encrypted(ciphertext) => {
+                                tracing::trace!(
+                                    ciphertext_len = ciphertext.len(),
+                                    "decrypting response"
+                                );
+
                                 // Decrypt
                                 let derived = self.inner.derived_keys.read().unwrap();
                                 let priv_key = derived
@@ -450,6 +504,11 @@ impl<T: Transport> Client<T> {
                                     &usm_params.priv_params,
                                 )?;
 
+                                tracing::trace!(
+                                    plaintext_len = plaintext.len(),
+                                    "decrypted response"
+                                );
+
                                 // Decode scoped PDU
                                 let mut decoder = Decoder::new(plaintext);
                                 let scoped_pdu = ScopedPdu::decode(&mut decoder)?;
@@ -470,6 +529,15 @@ impl<T: Transport> Client<T> {
                             actual: response_pdu.request_id,
                         });
                     }
+
+                    tracing::debug!(
+                        snmp.pdu_type = ?response_pdu.pdu_type,
+                        snmp.varbind_count = response_pdu.varbinds.len(),
+                        snmp.error_status = response_pdu.error_status,
+                        snmp.error_index = response_pdu.error_index,
+                        "received V3 {} response",
+                        response_pdu.pdu_type
+                    );
 
                     // Update engine time from successful response
                     {

@@ -45,6 +45,22 @@ impl PduType {
     }
 }
 
+impl std::fmt::Display for PduType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GetRequest => write!(f, "GetRequest"),
+            Self::GetNextRequest => write!(f, "GetNextRequest"),
+            Self::Response => write!(f, "Response"),
+            Self::SetRequest => write!(f, "SetRequest"),
+            Self::TrapV1 => write!(f, "TrapV1"),
+            Self::GetBulkRequest => write!(f, "GetBulkRequest"),
+            Self::InformRequest => write!(f, "InformRequest"),
+            Self::TrapV2 => write!(f, "TrapV2"),
+            Self::Report => write!(f, "Report"),
+        }
+    }
+}
+
 /// Generic PDU structure for request/response operations.
 #[derive(Debug, Clone)]
 pub struct Pdu {

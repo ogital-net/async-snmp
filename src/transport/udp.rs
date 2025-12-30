@@ -31,6 +31,8 @@ impl UdpTransport {
     /// Creates an ephemeral UDP socket bound to the appropriate address family.
     /// For IPv6 targets, the socket has `IPV6_V6ONLY` set to true.
     pub async fn connect(target: SocketAddr) -> Result<Self> {
+        tracing::debug!(snmp.target = %target, "connecting UDP transport");
+
         let socket = bind_ephemeral_udp_socket(target)
             .await
             .map_err(|e| Error::Io {
@@ -47,6 +49,12 @@ impl UdpTransport {
             target: Some(target),
             source: e,
         })?;
+
+        tracing::debug!(
+            snmp.target = %target,
+            snmp.local_addr = %local_addr,
+            "UDP transport connected"
+        );
 
         Ok(Self {
             inner: Arc::new(UdpTransportInner {
@@ -79,6 +87,11 @@ impl UdpTransport {
 
 impl Transport for UdpTransport {
     async fn send(&self, data: &[u8]) -> Result<()> {
+        tracing::trace!(
+            snmp.target = %self.inner.target,
+            snmp.bytes = data.len(),
+            "UDP send"
+        );
         self.inner.socket.send(data).await.map_err(|e| Error::Io {
             target: Some(self.inner.target),
             source: e,
@@ -87,6 +100,13 @@ impl Transport for UdpTransport {
     }
 
     async fn recv(&self, request_id: i32, recv_timeout: Duration) -> Result<(Bytes, SocketAddr)> {
+        tracing::trace!(
+            snmp.target = %self.inner.target,
+            snmp.request_id = request_id,
+            snmp.timeout_ms = recv_timeout.as_millis() as u64,
+            "UDP recv waiting"
+        );
+
         let mut buf = vec![0u8; 65535];
 
         let result = timeout(recv_timeout, self.inner.socket.recv(&mut buf)).await;
@@ -94,18 +114,37 @@ impl Transport for UdpTransport {
         match result {
             Ok(Ok(len)) => {
                 buf.truncate(len);
+                tracing::trace!(
+                    snmp.target = %self.inner.target,
+                    snmp.bytes = len,
+                    "UDP recv complete"
+                );
                 Ok((Bytes::from(buf), self.inner.target))
             }
-            Ok(Err(e)) => Err(Error::Io {
-                target: Some(self.inner.target),
-                source: e,
-            }),
-            Err(_) => Err(Error::Timeout {
-                target: Some(self.inner.target),
-                elapsed: recv_timeout,
-                request_id,
-                retries: 0,
-            }),
+            Ok(Err(e)) => {
+                tracing::trace!(
+                    snmp.target = %self.inner.target,
+                    error = %e,
+                    "UDP recv error"
+                );
+                Err(Error::Io {
+                    target: Some(self.inner.target),
+                    source: e,
+                })
+            }
+            Err(_) => {
+                tracing::trace!(
+                    snmp.target = %self.inner.target,
+                    snmp.request_id = request_id,
+                    "UDP recv timeout"
+                );
+                Err(Error::Timeout {
+                    target: Some(self.inner.target),
+                    elapsed: recv_timeout,
+                    request_id,
+                    retries: 0,
+                })
+            }
         }
     }
 
