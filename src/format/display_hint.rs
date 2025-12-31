@@ -1,0 +1,424 @@
+//! RFC 2579 DISPLAY-HINT formatting for OCTET STRING values.
+//!
+//! This module provides parsing and application of DISPLAY-HINT format strings
+//! to raw bytes, commonly used to format MAC addresses, IP addresses, and other
+//! structured binary data.
+//!
+//! # Examples
+//!
+//! ```
+//! use async_snmp::format::display_hint;
+//!
+//! // IPv4 address
+//! assert_eq!(display_hint::apply("1d.1d.1d.1d", &[192, 168, 1, 1]), "192.168.1.1");
+//!
+//! // MAC address (implicit repetition)
+//! assert_eq!(display_hint::apply("1x:", &[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]), "00:1a:2b:3c:4d:5e");
+//!
+//! // DateAndTime
+//! assert_eq!(display_hint::apply("2d-1d-1d,1d:1d:1d.1d", &[0x07, 0xE6, 8, 15, 8, 1, 15, 0]), "2022-8-15,8:1:15.0");
+//! ```
+
+use std::fmt::Write;
+
+/// Apply RFC 2579 DISPLAY-HINT formatting to raw bytes.
+///
+/// Parses the hint string and applies it to the data in a single pass.
+/// On any parse error or empty input, falls back to lowercase hex encoding.
+///
+/// # Format Specification
+///
+/// Each format specification has the form: `[*]<length><format>[separator][terminator]`
+///
+/// - `*` (optional): First data byte is repeat count for this spec
+/// - `length`: Decimal digits specifying bytes to consume per application
+/// - `format`: One of `d` (decimal), `x` (hex), `o` (octal), `a` (ASCII), `t` (UTF-8)
+/// - `separator` (optional): Character to emit between formatted segments
+/// - `terminator` (optional): Character after repeat group (only with `*`)
+///
+/// The last format specification repeats until all data is exhausted (implicit
+/// repetition rule). Trailing separators are suppressed.
+///
+/// # Examples
+///
+/// ```
+/// use async_snmp::format::display_hint;
+///
+/// // IPv4 address
+/// assert_eq!(display_hint::apply("1d.1d.1d.1d", &[192, 168, 1, 1]), "192.168.1.1");
+///
+/// // MAC address (implicit repetition)
+/// assert_eq!(display_hint::apply("1x:", &[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]), "00:1a:2b:3c:4d:5e");
+///
+/// // Star prefix with terminator
+/// assert_eq!(display_hint::apply("*1d./1d", &[3, 10, 20, 30, 40]), "10.20.30/40");
+///
+/// // Empty hint returns hex
+/// assert_eq!(display_hint::apply("", &[1, 2, 3]), "010203");
+///
+/// // Empty data returns empty string
+/// assert_eq!(display_hint::apply("1d", &[]), "");
+/// ```
+pub fn apply(hint: &str, data: &[u8]) -> String {
+    if hint.is_empty() || data.is_empty() {
+        return hex_encode(data);
+    }
+
+    let hint = hint.as_bytes();
+    let mut result = String::with_capacity(data.len() * 4);
+    let mut hint_pos = 0;
+    let mut data_pos = 0;
+    let mut last_spec_start = 0;
+
+    while data_pos < data.len() {
+        // If we've exhausted the hint, restart from the last spec (implicit repetition)
+        if hint_pos >= hint.len() {
+            hint_pos = last_spec_start;
+        }
+
+        let spec_start = hint_pos;
+
+        // (1) Optional '*' repeat indicator
+        let star_prefix = if hint_pos < hint.len() && hint[hint_pos] == b'*' {
+            hint_pos += 1;
+            true
+        } else {
+            false
+        };
+
+        // (2) Octet length - one or more decimal digits (required)
+        if hint_pos >= hint.len() || !is_digit(hint[hint_pos]) {
+            return hex_encode(data);
+        }
+
+        let mut take = 0usize;
+        while hint_pos < hint.len() && is_digit(hint[hint_pos]) {
+            take = take * 10 + (hint[hint_pos] - b'0') as usize;
+            hint_pos += 1;
+        }
+
+        if take == 0 {
+            return hex_encode(data);
+        }
+
+        // (3) Format character (required)
+        if hint_pos >= hint.len() {
+            return hex_encode(data);
+        }
+
+        let fmt_char = hint[hint_pos];
+        if !matches!(fmt_char, b'd' | b'x' | b'o' | b'a' | b't') {
+            return hex_encode(data);
+        }
+        hint_pos += 1;
+
+        // (4) Optional separator
+        let (sep, has_sep) =
+            if hint_pos < hint.len() && !is_digit(hint[hint_pos]) && hint[hint_pos] != b'*' {
+                let s = hint[hint_pos];
+                hint_pos += 1;
+                (s, true)
+            } else {
+                (0, false)
+            };
+
+        // (5) Optional terminator (only valid with star_prefix)
+        let (term, has_term) = if star_prefix
+            && hint_pos < hint.len()
+            && !is_digit(hint[hint_pos])
+            && hint[hint_pos] != b'*'
+        {
+            let t = hint[hint_pos];
+            hint_pos += 1;
+            (t, true)
+        } else {
+            (0, false)
+        };
+
+        // Remember this spec for implicit repetition
+        last_spec_start = spec_start;
+
+        // Apply the spec to data
+        let repeat_count = if star_prefix && data_pos < data.len() {
+            let count = data[data_pos] as usize;
+            data_pos += 1;
+            count
+        } else {
+            1
+        };
+
+        for r in 0..repeat_count {
+            if data_pos >= data.len() {
+                break;
+            }
+
+            let end = (data_pos + take).min(data.len());
+            let chunk = &data[data_pos..end];
+
+            // Format the chunk
+            match fmt_char {
+                b'd' => {
+                    // Big-endian unsigned integer
+                    let val = chunk.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
+                    let _ = write!(result, "{}", val);
+                }
+                b'x' => {
+                    // Hex encoding - zero-padded per byte
+                    write_hex(&mut result, chunk);
+                }
+                b'o' => {
+                    // Big-endian octal
+                    let val = chunk.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
+                    let _ = write!(result, "{:o}", val);
+                }
+                b'a' | b't' => {
+                    // ASCII/UTF-8 - write bytes directly
+                    for &b in chunk {
+                        result.push(b as char);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            data_pos = end;
+
+            // Emit separator (suppressed if at end of data)
+            let more_data = data_pos < data.len();
+            if has_sep && more_data {
+                // Suppress separator before terminator
+                if has_term && r == repeat_count - 1 {
+                    // Don't emit separator, terminator will follow
+                } else {
+                    result.push(sep as char);
+                }
+            }
+        }
+
+        // Emit terminator after repeat group
+        if has_term && data_pos < data.len() {
+            result.push(term as char);
+        }
+    }
+
+    result
+}
+
+/// Encode bytes as lowercase hex string.
+fn hex_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len() * 2);
+    write_hex(&mut out, data);
+    out
+}
+
+/// Write hex-encoded bytes to a String.
+fn write_hex(out: &mut String, data: &[u8]) {
+    const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
+    for &b in data {
+        out.push(HEX_TABLE[(b >> 4) as usize] as char);
+        out.push(HEX_TABLE[(b & 0x0f) as usize] as char);
+    }
+}
+
+#[inline]
+fn is_digit(c: u8) -> bool {
+    c.is_ascii_digit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // Basic Format Tests
+    // ========================================================================
+
+    #[test]
+    fn empty_hint_returns_hex() {
+        assert_eq!(apply("", &[0x01, 0x02, 0x03]), "010203");
+    }
+
+    #[test]
+    fn empty_data_returns_empty() {
+        assert_eq!(apply("1d", &[]), "");
+    }
+
+    #[test]
+    fn ipv4_address() {
+        assert_eq!(apply("1d.1d.1d.1d", &[192, 168, 1, 1]), "192.168.1.1");
+    }
+
+    #[test]
+    fn ipv4_with_zone_id() {
+        assert_eq!(
+            apply("1d.1d.1d.1d%4d", &[192, 168, 1, 1, 0, 0, 0, 3]),
+            "192.168.1.1%3"
+        );
+    }
+
+    #[test]
+    fn mac_address() {
+        assert_eq!(
+            apply("1x:", &[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]),
+            "00:1a:2b:3c:4d:5e"
+        );
+    }
+
+    #[test]
+    fn ipv6_address() {
+        let data = [
+            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01,
+        ];
+        assert_eq!(
+            apply("2x:2x:2x:2x:2x:2x:2x:2x", &data),
+            "2001:0db8:0000:0000:0000:0000:0000:0001"
+        );
+    }
+
+    #[test]
+    fn ipv6_with_zone_id() {
+        let data = [
+            0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x05,
+        ];
+        assert_eq!(
+            apply("2x:2x:2x:2x:2x:2x:2x:2x%4d", &data),
+            "fe80:0000:0000:0000:0000:0000:0000:0001%5"
+        );
+    }
+
+    #[test]
+    fn display_string() {
+        assert_eq!(apply("255a", b"Hello, World!"), "Hello, World!");
+    }
+
+    #[test]
+    fn simple_decimal() {
+        assert_eq!(apply("1d", &[42]), "42");
+    }
+
+    #[test]
+    fn multi_byte_decimal() {
+        assert_eq!(apply("4d", &[0x00, 0x01, 0x00, 0x00]), "65536");
+    }
+
+    #[test]
+    fn octal_format() {
+        assert_eq!(apply("1o", &[8]), "10");
+    }
+
+    #[test]
+    fn hex_with_dash_separator() {
+        assert_eq!(apply("1x-", &[0xaa, 0xbb, 0xcc]), "aa-bb-cc");
+    }
+
+    #[test]
+    fn star_prefix_repeat() {
+        assert_eq!(apply("*1x:", &[3, 0xaa, 0xbb, 0xcc]), "aa:bb:cc");
+    }
+
+    #[test]
+    fn star_prefix_with_terminator() {
+        assert_eq!(apply("*1d./1d", &[3, 10, 20, 30, 40]), "10.20.30/40");
+    }
+
+    #[test]
+    fn trailing_separator_suppressed() {
+        assert_eq!(apply("1d.", &[1, 2, 3]), "1.2.3");
+    }
+
+    #[test]
+    fn date_and_time() {
+        assert_eq!(
+            apply("2d-1d-1d,1d:1d:1d.1d", &[0x07, 0xE6, 8, 15, 8, 1, 15, 0]),
+            "2022-8-15,8:1:15.0"
+        );
+    }
+
+    #[test]
+    fn data_shorter_than_spec() {
+        assert_eq!(apply("1d.1d.1d.1d", &[10, 20]), "10.20");
+    }
+
+    #[test]
+    fn utf8_format() {
+        assert_eq!(apply("10t", b"hello"), "hello");
+    }
+
+    #[test]
+    fn uuid_format() {
+        let data = [
+            0x12, 0x34, 0x56, 0x78, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x00, 0x11, 0x22, 0x33,
+            0x44, 0x55,
+        ];
+        assert_eq!(
+            apply("4x-2x-2x-1x1x-6x", &data),
+            "12345678-abcd-ef01-2345-001122334455"
+        );
+    }
+
+    #[test]
+    fn ipv4_with_prefix() {
+        assert_eq!(apply("1d.1d.1d.1d/1d", &[10, 0, 0, 0, 24]), "10.0.0.0/24");
+    }
+
+    #[test]
+    fn two_digit_take_value() {
+        assert_eq!(
+            apply("10d", &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]),
+            "1"
+        );
+    }
+
+    #[test]
+    fn zero_padded_hex_output() {
+        assert_eq!(apply("1x", &[0x0f]), "0f");
+    }
+
+    #[test]
+    fn single_byte_trailing_separator_suppressed() {
+        assert_eq!(apply("1d.", &[42]), "42");
+    }
+
+    // ========================================================================
+    // Error Cases (should return hex fallback)
+    // ========================================================================
+
+    #[test]
+    fn invalid_format_character() {
+        assert_eq!(apply("1z", &[1, 2, 3]), "010203");
+    }
+
+    #[test]
+    fn missing_format_character() {
+        assert_eq!(apply("1", &[1, 2, 3]), "010203");
+    }
+
+    #[test]
+    fn missing_take_value() {
+        assert_eq!(apply("d", &[1, 2, 3]), "010203");
+    }
+
+    #[test]
+    fn zero_take_value() {
+        assert_eq!(apply("0d", &[1, 2, 3]), "010203");
+    }
+
+    // ========================================================================
+    // Implicit Repetition Tests
+    // ========================================================================
+
+    #[test]
+    fn single_spec_repeats_for_all_data() {
+        assert_eq!(apply("1d.", &[1, 2, 3, 4, 5]), "1.2.3.4.5");
+    }
+
+    #[test]
+    fn last_spec_repeats_after_fixed_prefix() {
+        assert_eq!(apply("1d-1d.", &[1, 2, 3, 4, 5, 6]), "1-2.3.4.5.6");
+    }
+
+    #[test]
+    fn hex_implicit_repetition() {
+        assert_eq!(apply("1x:", &[0xaa, 0xbb, 0xcc, 0xdd]), "aa:bb:cc:dd");
+    }
+}

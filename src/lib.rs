@@ -60,6 +60,7 @@ pub mod agent;
 pub mod ber;
 pub mod client;
 pub mod error;
+pub mod format;
 pub mod handler;
 pub mod message;
 pub mod notification;

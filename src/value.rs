@@ -135,6 +135,31 @@ impl Value {
         )
     }
 
+    /// Format an OctetString or Opaque value using RFC 2579 DISPLAY-HINT.
+    ///
+    /// Returns `None` if this is not an OctetString or Opaque value.
+    /// On invalid hint syntax, falls back to hex encoding.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use bytes::Bytes;
+    ///
+    /// let mac = Value::OctetString(Bytes::from_static(&[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]));
+    /// assert_eq!(mac.format_with_hint("1x:"), Some("00:1a:2b:3c:4d:5e".into()));
+    ///
+    /// let integer = Value::Integer(42);
+    /// assert_eq!(integer.format_with_hint("1d"), None);
+    /// ```
+    pub fn format_with_hint(&self, hint: &str) -> Option<String> {
+        match self {
+            Value::OctetString(bytes) => Some(crate::format::display_hint::apply(hint, bytes)),
+            Value::Opaque(bytes) => Some(crate::format::display_hint::apply(hint, bytes)),
+            _ => None,
+        }
+    }
+
     /// Encode to BER.
     pub fn encode(&self, buf: &mut EncodeBuf) {
         match self {
