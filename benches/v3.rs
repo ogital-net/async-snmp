@@ -4,7 +4,8 @@
 //! for all SNMPv3 communications.
 
 use async_snmp::v3::{AuthProtocol, LocalizedKey, PrivKey, PrivProtocol};
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 
 const ENGINE_ID: &[u8] = b"\x80\x00\x1f\x88\x80\xe9\xb1\x04\x61\x73\x61\x00\x00\x00";
 const PASSWORD: &[u8] = b"maplesyrup";

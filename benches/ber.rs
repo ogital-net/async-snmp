@@ -8,7 +8,8 @@ use async_snmp::oid::Oid;
 use async_snmp::value::Value;
 use async_snmp::varbind::VarBind;
 use bytes::Bytes;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use std::hint::black_box;
 
 /// Common OIDs used in benchmarks
 fn common_oids() -> Vec<(&'static str, Oid)> {

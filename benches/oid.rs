@@ -5,7 +5,8 @@
 //! this optimization provides meaningful value.
 
 use async_snmp::oid::Oid;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 /// Generate OIDs of various lengths for benchmarking
 fn generate_oid(len: usize) -> Oid {
