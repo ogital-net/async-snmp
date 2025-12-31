@@ -44,9 +44,27 @@ dirs = "6.0"
 libc = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = "1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+futures = "0.3"
 
 # Enable testing features for integration tests
 async-snmp = { path = ".", features = ["testing"] }
+
+[[bench]]
+name = "ber"
+harness = false
+
+[[bench]]
+name = "oid"
+harness = false
+
+[[bench]]
+name = "client"
+harness = false
+
+[[bench]]
+name = "v3"
+harness = false
 
 [features]
 default = []
