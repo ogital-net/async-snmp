@@ -10,6 +10,8 @@
 //!   snmpwalk -v2c -c public localhost:11161 system
 //!   snmpbulkwalk -v2c -c public localhost:11161 system
 
+#![allow(clippy::result_large_err)]
+
 use async_snmp::{
     Agent, BoxFuture, GetNextResult, GetResult, MibHandler, Oid, RequestContext, SetResult, Value,
     VarBind, oid,
