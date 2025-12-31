@@ -254,14 +254,21 @@ impl ClientBuilder {
                 let mut security =
                     V3SecurityConfig::new(Bytes::copy_from_slice(usm.username.as_bytes()));
 
-                if let (Some(auth_proto), Some(auth_pass)) = (usm.auth_protocol, &usm.auth_password)
-                {
-                    security = security.auth(auth_proto, auth_pass.as_bytes().to_vec());
-                }
+                // Prefer master_keys over passwords if available
+                if let Some(ref master_keys) = usm.master_keys {
+                    security = security.with_master_keys(master_keys.clone());
+                } else {
+                    if let (Some(auth_proto), Some(auth_pass)) =
+                        (usm.auth_protocol, &usm.auth_password)
+                    {
+                        security = security.auth(auth_proto, auth_pass.as_bytes().to_vec());
+                    }
 
-                if let (Some(priv_proto), Some(priv_pass)) = (usm.priv_protocol, &usm.priv_password)
-                {
-                    security = security.privacy(priv_proto, priv_pass.as_bytes().to_vec());
+                    if let (Some(priv_proto), Some(priv_pass)) =
+                        (usm.priv_protocol, &usm.priv_password)
+                    {
+                        security = security.privacy(priv_proto, priv_pass.as_bytes().to_vec());
+                    }
                 }
 
                 ClientConfig {
@@ -413,6 +420,7 @@ mod tests {
             priv_protocol: Some(PrivProtocol::Aes128),
             priv_password: Some("privpass".to_string()),
             context_name: None,
+            master_keys: None,
         };
         let builder = ClientBuilder::new("192.168.1.1:161", Auth::Usm(usm));
         let err = builder.validate().unwrap_err();
@@ -431,6 +439,7 @@ mod tests {
             priv_protocol: None,
             priv_password: None,
             context_name: None,
+            master_keys: None,
         };
         let builder = ClientBuilder::new("192.168.1.1:161", Auth::Usm(usm));
         let err = builder.validate().unwrap_err();
@@ -449,6 +458,7 @@ mod tests {
             priv_protocol: Some(PrivProtocol::Aes128),
             priv_password: None,
             context_name: None,
+            master_keys: None,
         };
         let builder = ClientBuilder::new("192.168.1.1:161", Auth::Usm(usm));
         let err = builder.validate().unwrap_err();

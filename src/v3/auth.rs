@@ -4,6 +4,31 @@
 //! - Password-to-key derivation (1MB expansion + hash)
 //! - Key localization (binding key to engine ID)
 //! - HMAC authentication for message integrity
+//!
+//! # Two-Level Key Derivation
+//!
+//! SNMPv3 key derivation is a two-step process:
+//!
+//! 1. **Password to Master Key** (~850μs for SHA-256): Expand password to 1MB
+//!    by repetition and hash it. This produces a protocol-specific master key.
+//!
+//! 2. **Localization** (~1μs): Bind the master key to a specific engine ID by
+//!    computing `H(master_key || engine_id || master_key)`.
+//!
+//! When polling many engines with the same credentials, cache the [`MasterKey`]
+//! and call [`MasterKey::localize`] for each engine ID. This avoids repeating
+//! the expensive 1MB expansion for every engine.
+//!
+//! ```rust
+//! use async_snmp::{AuthProtocol, MasterKey};
+//!
+//! // Expensive: ~850μs - do once per password
+//! let master = MasterKey::from_password(AuthProtocol::Sha256, b"authpassword");
+//!
+//! // Cheap: ~1μs each - do per engine
+//! let key1 = master.localize(b"\x80\x00\x1f\x88\x80...");
+//! let key2 = master.localize(b"\x80\x00\x1f\x88\x81...");
+//! ```
 
 use digest::{Digest, KeyInit, Mac, OutputSizeUser};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -16,6 +41,124 @@ use super::AuthProtocol;
 /// While this library accepts shorter passwords for flexibility, applications should
 /// enforce this minimum for security.
 pub const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// Master authentication key (Ku) before engine localization.
+///
+/// This is the intermediate result of the RFC 3414 password-to-key algorithm,
+/// computed by expanding the password to 1MB and hashing it. This step is
+/// computationally expensive (~850μs for SHA-256) but can be cached and reused
+/// across multiple engines that share the same credentials.
+///
+/// # Performance
+///
+/// | Operation | Time |
+/// |-----------|------|
+/// | `MasterKey::from_password` (SHA-256) | ~850 μs |
+/// | `MasterKey::localize` | ~1 μs |
+///
+/// For applications polling many engines with shared credentials, caching the
+/// `MasterKey` provides significant performance benefits.
+///
+/// # Security
+///
+/// Key material is automatically zeroed from memory when dropped, using the
+/// `zeroize` crate. This provides defense-in-depth against memory scraping.
+///
+/// # Example
+///
+/// ```rust
+/// use async_snmp::{AuthProtocol, MasterKey};
+///
+/// // Derive master key once (expensive)
+/// let master = MasterKey::from_password(AuthProtocol::Sha256, b"authpassword");
+///
+/// // Localize to different engines (cheap)
+/// let engine1_id = b"\x80\x00\x1f\x88\x80\xe9\xb1\x04\x61\x73\x61\x00\x00\x00";
+/// let engine2_id = b"\x80\x00\x1f\x88\x80\xe9\xb1\x04\x61\x73\x61\x00\x00\x01";
+///
+/// let key1 = master.localize(engine1_id);
+/// let key2 = master.localize(engine2_id);
+/// ```
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct MasterKey {
+    key: Vec<u8>,
+    #[zeroize(skip)]
+    protocol: AuthProtocol,
+}
+
+impl MasterKey {
+    /// Derive a master key from a password.
+    ///
+    /// This implements RFC 3414 Section A.2.1: expand the password to 1MB by
+    /// repetition, then hash the result. This is computationally expensive
+    /// (~850μs for SHA-256) but only needs to be done once per password.
+    ///
+    /// # Empty and Short Passwords
+    ///
+    /// Empty passwords result in an all-zero key. A warning is logged when
+    /// the password is shorter than [`MIN_PASSWORD_LENGTH`] (8 characters).
+    pub fn from_password(protocol: AuthProtocol, password: &[u8]) -> Self {
+        if password.len() < MIN_PASSWORD_LENGTH {
+            tracing::warn!(
+                password_len = password.len(),
+                min_len = MIN_PASSWORD_LENGTH,
+                "SNMPv3 password is shorter than recommended minimum; \
+                 net-snmp rejects passwords shorter than 8 characters"
+            );
+        }
+        let key = password_to_key(protocol, password);
+        Self { key, protocol }
+    }
+
+    /// Derive a master key from a string password.
+    pub fn from_str_password(protocol: AuthProtocol, password: &str) -> Self {
+        Self::from_password(protocol, password.as_bytes())
+    }
+
+    /// Create a master key from raw bytes.
+    ///
+    /// Use this if you already have a master key (e.g., from configuration).
+    /// The bytes should be the raw digest output from the 1MB password expansion.
+    pub fn from_bytes(protocol: AuthProtocol, key: impl Into<Vec<u8>>) -> Self {
+        Self {
+            key: key.into(),
+            protocol,
+        }
+    }
+
+    /// Localize this master key to a specific engine ID.
+    ///
+    /// This implements RFC 3414 Section A.2.2:
+    /// `localized_key = H(master_key || engine_id || master_key)`
+    ///
+    /// This operation is cheap (~1μs) compared to master key derivation.
+    pub fn localize(&self, engine_id: &[u8]) -> LocalizedKey {
+        let localized = localize_key(self.protocol, &self.key, engine_id);
+        LocalizedKey {
+            key: localized,
+            protocol: self.protocol,
+        }
+    }
+
+    /// Get the protocol this key is for.
+    pub fn protocol(&self) -> AuthProtocol {
+        self.protocol
+    }
+
+    /// Get the raw key bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.key
+    }
+}
+
+impl std::fmt::Debug for MasterKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MasterKey")
+            .field("protocol", &self.protocol)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
 
 /// Localized authentication key.
 ///
@@ -42,6 +185,12 @@ impl LocalizedKey {
     /// 2. Hash the expansion to get the master key
     /// 3. Hash (master_key || engine_id || master_key) to get the localized key
     ///
+    /// # Performance Note
+    ///
+    /// This method performs the full key derivation (~850μs for SHA-256). When
+    /// polling many engines with shared credentials, use [`MasterKey`] to cache
+    /// the intermediate result and call [`MasterKey::localize`] for each engine.
+    ///
     /// # Empty and Short Passwords
     ///
     /// Empty passwords result in an all-zero key of the appropriate length for
@@ -51,23 +200,8 @@ impl LocalizedKey {
     /// While empty/short passwords are accepted for flexibility, they provide
     /// minimal security. A warning is logged at the `WARN` level when the
     /// password is shorter than [`MIN_PASSWORD_LENGTH`] (8 characters).
-    /// Consider enforcing minimum password length in your application if
-    /// security is a concern.
     pub fn from_password(protocol: AuthProtocol, password: &[u8], engine_id: &[u8]) -> Self {
-        if password.len() < MIN_PASSWORD_LENGTH {
-            tracing::warn!(
-                password_len = password.len(),
-                min_len = MIN_PASSWORD_LENGTH,
-                "SNMPv3 password is shorter than recommended minimum; \
-                 net-snmp rejects passwords shorter than 8 characters"
-            );
-        }
-        let master_key = password_to_key(protocol, password);
-        let localized = localize_key(protocol, &master_key, engine_id);
-        Self {
-            key: localized,
-            protocol,
-        }
+        MasterKey::from_password(protocol, password).localize(engine_id)
     }
 
     /// Derive a localized key from a string password and engine ID.
@@ -76,6 +210,14 @@ impl LocalizedKey {
     /// [`from_password`](Self::from_password).
     pub fn from_str_password(protocol: AuthProtocol, password: &str, engine_id: &[u8]) -> Self {
         Self::from_password(protocol, password.as_bytes(), engine_id)
+    }
+
+    /// Create a localized key from a master key and engine ID.
+    ///
+    /// This is the efficient path when you have a cached [`MasterKey`].
+    /// Equivalent to calling [`MasterKey::localize`].
+    pub fn from_master_key(master: &MasterKey, engine_id: &[u8]) -> Self {
+        master.localize(engine_id)
     }
 
     /// Create a localized key from raw bytes.
@@ -331,6 +473,135 @@ pub fn verify_message(
     key.verify_hmac(&msg_copy, received_mac)
 }
 
+/// Pre-computed master keys for SNMPv3 authentication and privacy.
+///
+/// This struct caches the expensive password-to-key derivation results for
+/// both authentication and privacy passwords. When polling many engines with
+/// shared credentials, create a `MasterKeys` once and use it with
+/// [`V3SecurityConfig`](crate::client::V3SecurityConfig) to avoid repeating
+/// the ~850μs key derivation for each engine.
+///
+/// # Example
+///
+/// ```rust
+/// use async_snmp::{AuthProtocol, PrivProtocol, MasterKeys};
+///
+/// // Create master keys once (expensive)
+/// let master_keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword")
+///     .with_privacy(PrivProtocol::Aes128, b"privpassword");
+///
+/// // Use with multiple clients - localization is cheap (~1μs per engine)
+/// ```
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct MasterKeys {
+    /// Master key for authentication (and base for privacy key derivation)
+    auth_master: MasterKey,
+    /// Optional separate master key for privacy password
+    /// If None, the auth_master is used for privacy (common case: same password)
+    #[zeroize(skip)]
+    priv_protocol: Option<super::PrivProtocol>,
+    priv_master: Option<MasterKey>,
+}
+
+impl MasterKeys {
+    /// Create master keys with just authentication.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{AuthProtocol, MasterKeys};
+    ///
+    /// let keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword");
+    /// ```
+    pub fn new(auth_protocol: AuthProtocol, auth_password: &[u8]) -> Self {
+        Self {
+            auth_master: MasterKey::from_password(auth_protocol, auth_password),
+            priv_protocol: None,
+            priv_master: None,
+        }
+    }
+
+    /// Add privacy with the same password as authentication.
+    ///
+    /// This is the common case where auth and priv passwords are identical.
+    /// The same master key is reused, avoiding duplicate derivation.
+    pub fn with_privacy_same_password(mut self, priv_protocol: super::PrivProtocol) -> Self {
+        self.priv_protocol = Some(priv_protocol);
+        // priv_master stays None - we'll use auth_master for priv key derivation
+        self
+    }
+
+    /// Add privacy with a different password than authentication.
+    ///
+    /// Use this when auth and priv passwords differ. A separate master key
+    /// derivation is performed for the privacy password.
+    pub fn with_privacy(
+        mut self,
+        priv_protocol: super::PrivProtocol,
+        priv_password: &[u8],
+    ) -> Self {
+        self.priv_protocol = Some(priv_protocol);
+        // Use the auth protocol for priv key derivation (per RFC 3826 Section 1.2)
+        self.priv_master = Some(MasterKey::from_password(
+            self.auth_master.protocol(),
+            priv_password,
+        ));
+        self
+    }
+
+    /// Get the authentication master key.
+    pub fn auth_master(&self) -> &MasterKey {
+        &self.auth_master
+    }
+
+    /// Get the privacy master key, if configured.
+    ///
+    /// Returns the separate priv master key if set, otherwise returns the
+    /// auth master key (for same-password case).
+    pub fn priv_master(&self) -> Option<&MasterKey> {
+        if self.priv_protocol.is_some() {
+            Some(self.priv_master.as_ref().unwrap_or(&self.auth_master))
+        } else {
+            None
+        }
+    }
+
+    /// Get the configured privacy protocol.
+    pub fn priv_protocol(&self) -> Option<super::PrivProtocol> {
+        self.priv_protocol
+    }
+
+    /// Get the authentication protocol.
+    pub fn auth_protocol(&self) -> AuthProtocol {
+        self.auth_master.protocol()
+    }
+
+    /// Derive localized keys for a specific engine ID.
+    ///
+    /// Returns (auth_key, priv_key) where priv_key is None if no privacy
+    /// was configured.
+    pub fn localize(&self, engine_id: &[u8]) -> (LocalizedKey, Option<crate::v3::PrivKey>) {
+        let auth_key = self.auth_master.localize(engine_id);
+
+        let priv_key = self.priv_protocol.map(|priv_protocol| {
+            let master = self.priv_master.as_ref().unwrap_or(&self.auth_master);
+            crate::v3::PrivKey::from_master_key(master, priv_protocol, engine_id)
+        });
+
+        (auth_key, priv_key)
+    }
+}
+
+impl std::fmt::Debug for MasterKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MasterKeys")
+            .field("auth_protocol", &self.auth_master.protocol())
+            .field("priv_protocol", &self.priv_protocol)
+            .field("has_separate_priv_password", &self.priv_master.is_some())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +710,133 @@ mod tests {
 
         assert_eq!(key_from_bytes.as_bytes(), key_from_str.as_bytes());
         assert_eq!(key_from_bytes.protocol(), key_from_str.protocol());
+    }
+
+    #[test]
+    fn test_master_key_localize_md5() {
+        // Verify MasterKey produces same result as LocalizedKey::from_password
+        let password = b"maplesyrup";
+        let engine_id = decode_hex("000000000000000000000002").unwrap();
+
+        let master = MasterKey::from_password(AuthProtocol::Md5, password);
+        let localized_via_master = master.localize(&engine_id);
+        let localized_direct = LocalizedKey::from_password(AuthProtocol::Md5, password, &engine_id);
+
+        assert_eq!(localized_via_master.as_bytes(), localized_direct.as_bytes());
+        assert_eq!(localized_via_master.protocol(), localized_direct.protocol());
+
+        // Verify the master key itself matches RFC 3414 test vector
+        assert_eq!(
+            encode_hex(master.as_bytes()),
+            "9faf3283884e92834ebc9847d8edd963"
+        );
+    }
+
+    #[test]
+    fn test_master_key_localize_sha1() {
+        let password = b"maplesyrup";
+        let engine_id = decode_hex("000000000000000000000002").unwrap();
+
+        let master = MasterKey::from_password(AuthProtocol::Sha1, password);
+        let localized_via_master = master.localize(&engine_id);
+        let localized_direct =
+            LocalizedKey::from_password(AuthProtocol::Sha1, password, &engine_id);
+
+        assert_eq!(localized_via_master.as_bytes(), localized_direct.as_bytes());
+
+        // Verify the master key itself matches RFC 3414 test vector
+        assert_eq!(
+            encode_hex(master.as_bytes()),
+            "9fb5cc0381497b3793528939ff788d5d79145211"
+        );
+    }
+
+    #[test]
+    fn test_master_key_reuse_for_multiple_engines() {
+        // Demonstrate that a single MasterKey can localize to multiple engines
+        let password = b"maplesyrup";
+        let engine_id_1 = decode_hex("000000000000000000000001").unwrap();
+        let engine_id_2 = decode_hex("000000000000000000000002").unwrap();
+
+        let master = MasterKey::from_password(AuthProtocol::Sha256, password);
+
+        let key1 = master.localize(&engine_id_1);
+        let key2 = master.localize(&engine_id_2);
+
+        // Keys should be different for different engines
+        assert_ne!(key1.as_bytes(), key2.as_bytes());
+
+        // Each key should match what from_password produces
+        let direct1 = LocalizedKey::from_password(AuthProtocol::Sha256, password, &engine_id_1);
+        let direct2 = LocalizedKey::from_password(AuthProtocol::Sha256, password, &engine_id_2);
+
+        assert_eq!(key1.as_bytes(), direct1.as_bytes());
+        assert_eq!(key2.as_bytes(), direct2.as_bytes());
+    }
+
+    #[test]
+    fn test_from_master_key() {
+        let password = b"maplesyrup";
+        let engine_id = decode_hex("000000000000000000000002").unwrap();
+
+        let master = MasterKey::from_password(AuthProtocol::Sha256, password);
+        let key_via_localize = master.localize(&engine_id);
+        let key_via_from_master = LocalizedKey::from_master_key(&master, &engine_id);
+
+        assert_eq!(key_via_localize.as_bytes(), key_via_from_master.as_bytes());
+    }
+
+    #[test]
+    fn test_master_keys_auth_only() {
+        let engine_id = decode_hex("000000000000000000000002").unwrap();
+        let master_keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword");
+
+        assert_eq!(master_keys.auth_protocol(), AuthProtocol::Sha256);
+        assert!(master_keys.priv_protocol().is_none());
+        assert!(master_keys.priv_master().is_none());
+
+        let (auth_key, priv_key) = master_keys.localize(&engine_id);
+        assert!(priv_key.is_none());
+        assert_eq!(auth_key.protocol(), AuthProtocol::Sha256);
+    }
+
+    #[test]
+    fn test_master_keys_with_privacy_same_password() {
+        use crate::v3::PrivProtocol;
+
+        let engine_id = decode_hex("000000000000000000000002").unwrap();
+        let master_keys = MasterKeys::new(AuthProtocol::Sha256, b"sharedpassword")
+            .with_privacy_same_password(PrivProtocol::Aes128);
+
+        assert_eq!(master_keys.auth_protocol(), AuthProtocol::Sha256);
+        assert_eq!(master_keys.priv_protocol(), Some(PrivProtocol::Aes128));
+
+        let (auth_key, priv_key) = master_keys.localize(&engine_id);
+        assert!(priv_key.is_some());
+        assert_eq!(auth_key.protocol(), AuthProtocol::Sha256);
+    }
+
+    #[test]
+    fn test_master_keys_with_privacy_different_password() {
+        use crate::v3::PrivProtocol;
+
+        let engine_id = decode_hex("000000000000000000000002").unwrap();
+        let master_keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword")
+            .with_privacy(PrivProtocol::Aes128, b"privpassword");
+
+        let (_auth_key, priv_key) = master_keys.localize(&engine_id);
+        assert!(priv_key.is_some());
+
+        // Verify that different passwords produce different keys
+        let same_password_keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword")
+            .with_privacy_same_password(PrivProtocol::Aes128);
+        let (_, priv_key_same) = same_password_keys.localize(&engine_id);
+
+        // The priv keys should differ when using different passwords
+        // (auth keys are the same since they use same auth password)
+        assert_ne!(
+            priv_key.as_ref().unwrap().encryption_key(),
+            priv_key_same.as_ref().unwrap().encryption_key()
+        );
     }
 }

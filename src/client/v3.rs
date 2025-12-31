@@ -27,6 +27,13 @@ use super::Client;
 ///
 /// Stores the credentials needed for authenticated and/or encrypted communication.
 /// Keys are derived when the engine ID is discovered.
+///
+/// # Master Key Caching
+///
+/// For high-throughput polling of many engines with shared credentials, use
+/// [`MasterKeys`](crate::MasterKeys) to cache the expensive password-to-key
+/// derivation. When `master_keys` is set, passwords are ignored and keys are
+/// derived from the cached master keys.
 #[derive(Clone)]
 pub struct V3SecurityConfig {
     /// Username for USM authentication
@@ -35,6 +42,8 @@ pub struct V3SecurityConfig {
     pub auth: Option<(AuthProtocol, Vec<u8>)>,
     /// Privacy protocol and password
     pub privacy: Option<(PrivProtocol, Vec<u8>)>,
+    /// Pre-computed master keys for efficient key derivation
+    pub master_keys: Option<crate::v3::MasterKeys>,
 }
 
 impl V3SecurityConfig {
@@ -44,6 +53,7 @@ impl V3SecurityConfig {
             username: username.into(),
             auth: None,
             privacy: None,
+            master_keys: None,
         }
     }
 
@@ -59,8 +69,26 @@ impl V3SecurityConfig {
         self
     }
 
+    /// Use pre-computed master keys for efficient key derivation.
+    ///
+    /// When set, passwords are ignored and keys are derived from the cached
+    /// master keys. This avoids the expensive ~850μs password expansion for
+    /// each engine.
+    pub fn with_master_keys(mut self, master_keys: crate::v3::MasterKeys) -> Self {
+        self.master_keys = Some(master_keys);
+        self
+    }
+
     /// Get the security level based on configured auth/privacy.
     pub fn security_level(&self) -> SecurityLevel {
+        // Check master_keys first, then fall back to auth/privacy
+        if let Some(ref master_keys) = self.master_keys {
+            if master_keys.priv_protocol().is_some() {
+                return SecurityLevel::AuthPriv;
+            }
+            return SecurityLevel::AuthNoPriv;
+        }
+
         match (&self.auth, &self.privacy) {
             (None, _) => SecurityLevel::NoAuthNoPriv,
             (Some(_), None) => SecurityLevel::AuthNoPriv,
@@ -69,12 +97,33 @@ impl V3SecurityConfig {
     }
 
     /// Derive localized keys for a specific engine ID.
+    ///
+    /// If master keys are configured, uses the cached master keys for efficient
+    /// localization (~1μs). Otherwise, performs full password-to-key derivation
+    /// (~850μs for SHA-256).
     pub fn derive_keys(&self, engine_id: &[u8]) -> V3DerivedKeys {
+        // Use master keys if available (efficient path)
+        if let Some(ref master_keys) = self.master_keys {
+            tracing::trace!(
+                engine_id_len = engine_id.len(),
+                auth_protocol = ?master_keys.auth_protocol(),
+                priv_protocol = ?master_keys.priv_protocol(),
+                "localizing from cached master keys"
+            );
+            let (auth_key, priv_key) = master_keys.localize(engine_id);
+            tracing::trace!("key localization complete");
+            return V3DerivedKeys {
+                auth_key: Some(auth_key),
+                priv_key,
+            };
+        }
+
+        // Fall back to password-based derivation
         tracing::trace!(
             engine_id_len = engine_id.len(),
             has_auth = self.auth.is_some(),
             has_priv = self.privacy.is_some(),
-            "deriving localized keys"
+            "deriving localized keys from passwords"
         );
 
         let auth_key = self.auth.as_ref().map(|(protocol, password)| {

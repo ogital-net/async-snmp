@@ -2,8 +2,27 @@
 //!
 //! This module provides the [`Auth`] enum for specifying authentication
 //! configuration, supporting SNMPv1/v2c community strings and SNMPv3 USM.
+//!
+//! # Master Key Caching
+//!
+//! For high-throughput polling of many engines with shared credentials, use
+//! [`MasterKeys`](crate::MasterKeys) to cache the expensive password-to-key
+//! derivation:
+//!
+//! ```rust
+//! use async_snmp::{Auth, AuthProtocol, PrivProtocol, MasterKeys};
+//!
+//! // Derive master keys once (expensive: ~850μs for SHA-256)
+//! let master_keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword")
+//!     .with_privacy(PrivProtocol::Aes128, b"privpassword");
+//!
+//! // Use with USM builder - localization is cheap (~1μs per engine)
+//! let auth: Auth = Auth::usm("admin")
+//!     .with_master_keys(master_keys)
+//!     .into();
+//! ```
 
-use crate::v3::{AuthProtocol, PrivProtocol};
+use crate::v3::{AuthProtocol, MasterKeys, PrivProtocol};
 
 /// SNMP version for community-based authentication.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -99,6 +118,10 @@ pub struct UsmAuth {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub context_name: Option<String>,
+    /// Pre-computed master keys for caching.
+    /// When set, passwords are ignored and keys are derived from master keys.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub master_keys: Option<MasterKeys>,
 }
 
 /// Builder for SNMPv3 USM authentication.
@@ -107,6 +130,7 @@ pub struct UsmBuilder {
     auth: Option<(AuthProtocol, String)>,
     privacy: Option<(PrivProtocol, String)>,
     context_name: Option<String>,
+    master_keys: Option<MasterKeys>,
 }
 
 impl UsmBuilder {
@@ -117,19 +141,54 @@ impl UsmBuilder {
             auth: None,
             privacy: None,
             context_name: None,
+            master_keys: None,
         }
     }
 
     /// Add authentication (authNoPriv or authPriv).
+    ///
+    /// This method performs the full key derivation (~850μs for SHA-256) when
+    /// the client connects. For high-throughput polling of many engines,
+    /// consider using [`with_master_keys`](Self::with_master_keys) instead.
     pub fn auth(mut self, protocol: AuthProtocol, password: impl Into<String>) -> Self {
         self.auth = Some((protocol, password.into()));
         self
     }
 
     /// Add privacy/encryption (authPriv).
+    ///
     /// Requires auth; validated at connection time.
     pub fn privacy(mut self, protocol: PrivProtocol, password: impl Into<String>) -> Self {
         self.privacy = Some((protocol, password.into()));
+        self
+    }
+
+    /// Use pre-computed master keys for authentication and privacy.
+    ///
+    /// This is the efficient path for high-throughput polling of many engines
+    /// with shared credentials. The expensive password-to-key derivation
+    /// (~850μs) is done once when creating the [`MasterKeys`], and only the
+    /// cheap localization (~1μs) is performed per engine.
+    ///
+    /// When master keys are set, the [`auth`](Self::auth) and
+    /// [`privacy`](Self::privacy) methods are ignored.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, AuthProtocol, PrivProtocol, MasterKeys};
+    ///
+    /// // Derive master keys once
+    /// let master_keys = MasterKeys::new(AuthProtocol::Sha256, b"authpassword")
+    ///     .with_privacy(PrivProtocol::Aes128, b"privpassword");
+    ///
+    /// // Use with multiple clients
+    /// let auth: Auth = Auth::usm("admin")
+    ///     .with_master_keys(master_keys)
+    ///     .into();
+    /// ```
+    pub fn with_master_keys(mut self, master_keys: MasterKeys) -> Self {
+        self.master_keys = Some(master_keys);
         self
     }
 
@@ -145,11 +204,20 @@ impl From<UsmBuilder> for Auth {
     fn from(b: UsmBuilder) -> Auth {
         Auth::Usm(UsmAuth {
             username: b.username,
-            auth_protocol: b.auth.as_ref().map(|(p, _)| *p),
+            auth_protocol: b
+                .master_keys
+                .as_ref()
+                .map(|m| m.auth_protocol())
+                .or(b.auth.as_ref().map(|(p, _)| *p)),
             auth_password: b.auth.map(|(_, pw)| pw),
-            priv_protocol: b.privacy.as_ref().map(|(p, _)| *p),
+            priv_protocol: b
+                .master_keys
+                .as_ref()
+                .and_then(|m| m.priv_protocol())
+                .or(b.privacy.as_ref().map(|(p, _)| *p)),
             priv_password: b.privacy.map(|(_, pw)| pw),
             context_name: b.context_name,
+            master_keys: b.master_keys,
         })
     }
 }

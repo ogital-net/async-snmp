@@ -100,7 +100,10 @@ pub use notification::{
 pub use oid::Oid;
 pub use pdu::{GenericTrap, Pdu, PduType, TrapV1Pdu};
 pub use transport::{SharedUdpHandle, SharedUdpTransport, TcpTransport, Transport, UdpTransport};
-pub use v3::{AuthProtocol, EngineCache, LocalizedKey, ParseProtocolError, PrivProtocol};
+pub use v3::{
+    AuthProtocol, EngineCache, LocalizedKey, MasterKey, MasterKeys, ParseProtocolError,
+    PrivProtocol,
+};
 pub use value::Value;
 pub use varbind::VarBind;
 pub use version::Version;

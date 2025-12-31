@@ -14,7 +14,7 @@ mod engine;
 mod privacy;
 mod usm;
 
-pub use auth::LocalizedKey;
+pub use auth::{LocalizedKey, MasterKey, MasterKeys};
 pub use engine::{EngineCache, EngineState, TIME_WINDOW, parse_discovery_response};
 pub use engine::{
     is_decryption_error_report, is_not_in_time_window_report, is_unknown_engine_id_report,

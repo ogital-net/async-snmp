@@ -81,6 +81,12 @@ impl PrivKey {
     /// - DES: first 8 bytes = key, last 8 bytes = pre-IV
     /// - AES: first 16/24/32 bytes = key (depending on AES variant)
     ///
+    /// # Performance Note
+    ///
+    /// This method performs the full key derivation (~850μs for SHA-256). When
+    /// polling many engines with shared credentials, use [`MasterKey`](super::MasterKey)
+    /// and call [`PrivKey::from_master_key`] for each engine.
+    ///
     /// # Auth/Priv Protocol Compatibility
     ///
     /// The authentication protocol must produce sufficient key material for
@@ -100,7 +106,27 @@ impl PrivKey {
         password: &[u8],
         engine_id: &[u8],
     ) -> Self {
-        use super::LocalizedKey;
+        use super::MasterKey;
+
+        let master = MasterKey::from_password(auth_protocol, password);
+        Self::from_master_key(&master, priv_protocol, engine_id)
+    }
+
+    /// Derive a privacy key from a master key and engine ID.
+    ///
+    /// This is the efficient path when you have a cached [`MasterKey`](super::MasterKey).
+    /// The master key's auth protocol must be compatible with the privacy protocol.
+    ///
+    /// # Auth/Priv Protocol Compatibility
+    ///
+    /// The authentication protocol used for the master key must produce sufficient
+    /// key material for the privacy protocol. See [`AuthProtocol::is_compatible_with`].
+    pub fn from_master_key(
+        master: &super::MasterKey,
+        priv_protocol: PrivProtocol,
+        engine_id: &[u8],
+    ) -> Self {
+        let auth_protocol = master.protocol();
 
         // Check auth/priv protocol compatibility
         if !auth_protocol.is_compatible_with(priv_protocol) {
@@ -114,8 +140,8 @@ impl PrivKey {
             );
         }
 
-        // Use auth protocol for key derivation (per RFC 3826 Section 1.2)
-        let localized = LocalizedKey::from_password(auth_protocol, password, engine_id);
+        // Localize the master key (per RFC 3826 Section 1.2)
+        let localized = master.localize(engine_id);
         let key = localized.as_bytes().to_vec();
 
         Self {
