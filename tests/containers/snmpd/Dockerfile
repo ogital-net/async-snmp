@@ -15,6 +15,6 @@ COPY snmpd.users.conf /var/lib/snmp/snmpd.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 161/udp
+EXPOSE 161/udp 161/tcp
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -389,4 +389,160 @@ mod tests {
         let transport = TcpTransport::connect(server_addr).await.unwrap();
         assert!(transport.is_stream());
     }
+
+    /// Test concurrent requests through a single TcpTransport.
+    ///
+    /// TCP serializes request-response pairs via locking. Multiple concurrent
+    /// callers queue up and execute one at a time. All should succeed.
+    #[tokio::test]
+    async fn test_tcp_concurrent_requests() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        // Track request_ids seen by server
+        let request_counter = Arc::new(AtomicI32::new(0));
+        let counter_clone = request_counter.clone();
+
+        // Server that handles multiple sequential requests
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            // Handle 5 requests sequentially (TCP serializes them)
+            for _ in 0..5 {
+                // Read request using BER framing
+                let mut tag = [0u8; 1];
+                if socket.read_exact(&mut tag).await.is_err() {
+                    break;
+                }
+
+                let mut len_byte = [0u8; 1];
+                socket.read_exact(&mut len_byte).await.unwrap();
+                let content_len = len_byte[0] as usize;
+
+                let mut content = vec![0u8; content_len];
+                socket.read_exact(&mut content).await.unwrap();
+
+                // Extract request_id from the request (offset varies, just use counter)
+                let request_id = counter_clone.fetch_add(1, Ordering::SeqCst) + 1;
+
+                // Build response with matching request_id
+                let response = build_response_with_id(request_id);
+                socket.write_all(&response).await.unwrap();
+            }
+        });
+
+        let transport = TcpTransport::connect(server_addr).await.unwrap();
+
+        // Spawn 5 concurrent tasks that all try to use the transport
+        let mut handles = vec![];
+        for i in 0..5 {
+            let transport = transport.clone();
+            let handle = tokio::spawn(async move {
+                let request_id = i + 1;
+                let request = build_request_with_id(request_id);
+
+                transport.send(&request).await?;
+                let (response, _) = transport.recv(request_id, Duration::from_secs(5)).await?;
+
+                // Verify we got a valid response
+                assert_eq!(response[0], 0x30, "Response should be SEQUENCE");
+                Ok::<_, Error>(i)
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        let results: Vec<_> = futures::future::join_all(handles).await;
+
+        let success_count = results
+            .iter()
+            .filter(|r| r.as_ref().map(|r| r.is_ok()).unwrap_or(false))
+            .count();
+
+        assert_eq!(
+            success_count, 5,
+            "All 5 concurrent requests should succeed (serialized)"
+        );
+
+        server.await.unwrap();
+    }
+
+    /// Build a minimal SNMP v2c request with a specific request_id.
+    fn build_request_with_id(request_id: i32) -> Vec<u8> {
+        let id_bytes = request_id.to_be_bytes();
+        vec![
+            0x30,
+            0x1d, // SEQUENCE length 29
+            0x02,
+            0x01,
+            0x01, // version = 1 (v2c)
+            0x04,
+            0x06,
+            0x70,
+            0x75,
+            0x62,
+            0x6c,
+            0x69,
+            0x63, // "public"
+            0xa0,
+            0x10, // GET PDU length 16
+            0x02,
+            0x04,
+            id_bytes[0],
+            id_bytes[1],
+            id_bytes[2],
+            id_bytes[3], // request_id
+            0x02,
+            0x01,
+            0x00, // error-status = 0
+            0x02,
+            0x01,
+            0x00, // error-index = 0
+            0x30,
+            0x02,
+            0x30,
+            0x00, // varbinds
+        ]
+    }
+
+    /// Build a minimal SNMP v2c response with a specific request_id.
+    fn build_response_with_id(request_id: i32) -> Vec<u8> {
+        let id_bytes = request_id.to_be_bytes();
+        vec![
+            0x30,
+            0x1d, // SEQUENCE length 29
+            0x02,
+            0x01,
+            0x01, // version = 1 (v2c)
+            0x04,
+            0x06,
+            0x70,
+            0x75,
+            0x62,
+            0x6c,
+            0x69,
+            0x63, // "public"
+            0xa2,
+            0x10, // Response PDU length 16
+            0x02,
+            0x04,
+            id_bytes[0],
+            id_bytes[1],
+            id_bytes[2],
+            id_bytes[3], // request_id
+            0x02,
+            0x01,
+            0x00, // error-status = 0
+            0x02,
+            0x01,
+            0x00, // error-index = 0
+            0x30,
+            0x02,
+            0x30,
+            0x00, // varbinds
+        ]
+    }
 }

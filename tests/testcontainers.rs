@@ -85,11 +85,12 @@ macro_rules! require_container_runtime {
 // Shared Container Infrastructure
 // ============================================================================
 
-/// Container info with host and port for connecting
+/// Container info with host and ports for connecting
 struct ContainerInfo {
     _container: ContainerAsync<GenericImage>,
     host: String,
-    port: u16,
+    udp_port: u16,
+    tcp_port: u16,
 }
 
 /// Container name used for the test container.
@@ -171,6 +172,7 @@ async fn get_snmpd_container() -> &'static ContainerInfo {
 
             let container = GenericImage::new(name, tag)
                 .with_exposed_port(161.udp())
+                .with_exposed_port(161.tcp())
                 .with_wait_for(WaitFor::seconds(2))
                 .with_container_name(CONTAINER_NAME)
                 .start()
@@ -178,15 +180,20 @@ async fn get_snmpd_container() -> &'static ContainerInfo {
                 .expect("Failed to start snmpd container");
 
             let host = container.get_host().await.expect("Failed to get host");
-            let port = container
+            let udp_port = container
                 .get_host_port_ipv4(161.udp())
                 .await
-                .expect("Failed to get port");
+                .expect("Failed to get UDP port");
+            let tcp_port = container
+                .get_host_port_ipv4(161.tcp())
+                .await
+                .expect("Failed to get TCP port");
 
             ContainerInfo {
                 _container: container,
                 host: host.to_string(),
-                port,
+                udp_port,
+                tcp_port,
             }
         })
         .await
@@ -201,10 +208,10 @@ async fn get_v3_container() -> &'static ContainerInfo {
     get_snmpd_container().await
 }
 
-/// Create a v2c client connected to the shared container
+/// Create a v2c client connected to the shared container (UDP)
 async fn create_v2c_client() -> Client {
     let info = get_v2c_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     Client::builder(&target, Auth::v2c("public"))
         .timeout(Duration::from_secs(5))
@@ -405,7 +412,7 @@ async fn test_get_many_batching() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // Create client with small max_oids_per_request to force batching
     let client = Client::builder(&target, Auth::v2c("public"))
@@ -467,7 +474,7 @@ async fn test_shared_transport_single_client() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -496,7 +503,7 @@ async fn test_shared_transport_multiple_clients() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -535,7 +542,7 @@ async fn test_shared_transport_walk() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -573,7 +580,7 @@ async fn test_shared_transport_fd_efficiency() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -632,7 +639,7 @@ async fn test_shared_transport_concurrent_correctness() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -691,7 +698,7 @@ async fn test_shared_transport_concurrent_different_oids() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -757,7 +764,7 @@ async fn test_shared_transport_client_drop_isolation() {
     require_container_runtime!();
 
     let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -820,7 +827,7 @@ use std::sync::Arc;
 /// Uses privaes128_user from our custom container.
 async fn create_v3_client() -> Client {
     let info = get_v3_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     Client::builder(
         &target,
@@ -898,7 +905,7 @@ async fn test_v3_shared_engine_cache() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // Create a shared engine cache
     let cache = Arc::new(EngineCache::new());
@@ -954,7 +961,7 @@ async fn test_v3_wrong_auth_password() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // Use wrong auth password - should fail
     let result = Client::builder(
@@ -1007,7 +1014,7 @@ async fn test_v3_wrong_priv_password() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // Use correct auth but wrong priv password - should fail
     let result = Client::builder(
@@ -1057,7 +1064,7 @@ async fn test_v3_unknown_user() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // Use non-existent username
     let result = Client::builder(
@@ -1098,7 +1105,7 @@ async fn test_v3_wrong_auth_protocol() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // privaes128_user is configured with SHA-1, try with MD5
     let result = Client::builder(
@@ -1137,7 +1144,7 @@ async fn test_v3_wrong_auth_protocol() {
 /// Uses the shared container which supports rwcommunity "private".
 async fn create_set_client() -> Client {
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     Client::builder(
         &target,
@@ -1420,7 +1427,7 @@ async fn test_v3_noauthnopriv_get() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // noAuthNoPriv user - no authentication or privacy
     let client = Client::builder(&target, Auth::usm(users::NOAUTH_USER))
@@ -1446,7 +1453,7 @@ async fn test_v3_noauthnopriv_walk() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(&target, Auth::usm(users::NOAUTH_USER))
         .timeout(Duration::from_secs(5))
@@ -1479,7 +1486,7 @@ async fn test_v3_auth_sha224() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1507,7 +1514,7 @@ async fn test_v3_auth_sha256() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1535,7 +1542,7 @@ async fn test_v3_auth_sha384() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1563,7 +1570,7 @@ async fn test_v3_auth_sha512() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1591,7 +1598,7 @@ async fn test_v3_auth_md5() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1623,7 +1630,7 @@ async fn test_v3_priv_aes192() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // AES-192 user uses SHA-256 auth per container config
     let client = Client::builder(
@@ -1654,7 +1661,7 @@ async fn test_v3_priv_aes256() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // AES-256 user uses SHA-256 auth per container config
     let client = Client::builder(
@@ -1685,7 +1692,7 @@ async fn test_v3_priv_des() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     // DES user uses SHA-1 auth per container config
     let client = Client::builder(
@@ -1716,7 +1723,7 @@ async fn test_v3_priv_aes192_walk() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1750,7 +1757,7 @@ async fn test_v3_priv_aes256_walk() {
     require_container_runtime!();
 
     let info = get_snmpd_container().await;
-    let target = format!("{}:{}", info.host, info.port);
+    let target = format!("{}:{}", info.host, info.udp_port);
 
     let client = Client::builder(
         &target,
@@ -1916,7 +1923,7 @@ async fn test_shared_transport_v3_concurrent() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -1989,7 +1996,7 @@ async fn test_shared_transport_v3_concurrent_different_oids() {
     require_container_runtime!();
 
     let info = get_v3_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
 
     let shared = SharedUdpTransport::builder()
         .bind("0.0.0.0:0")
@@ -2062,5 +2069,162 @@ async fn test_shared_transport_v3_concurrent_different_oids() {
         clients.len(),
         "Expected all {} V3 requests to succeed with correct OIDs",
         clients.len()
+    );
+}
+
+// ============================================================================
+// TCP Transport Tests
+// ============================================================================
+
+/// Test basic GET operation over TCP transport.
+#[tokio::test]
+async fn test_tcp_transport_get() {
+    require_container_runtime!();
+
+    let info = get_snmpd_container().await;
+    let target = format!("{}:{}", info.host, info.tcp_port);
+
+    let client = Client::builder(&target, Auth::v2c("public"))
+        .timeout(Duration::from_secs(5))
+        .connect_tcp()
+        .await
+        .expect("Failed to connect via TCP");
+
+    let result = client.get(&oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)).await;
+
+    match result {
+        Ok(vb) => {
+            println!("TCP sysDescr: {:?}", vb.value);
+            assert_eq!(vb.oid, oid!(1, 3, 6, 1, 2, 1, 1, 1, 0));
+            assert!(matches!(vb.value, Value::OctetString(_)));
+        }
+        Err(e) => panic!("TCP GET failed: {}", e),
+    }
+}
+
+/// Test walk operation over TCP transport.
+#[tokio::test]
+async fn test_tcp_transport_walk() {
+    require_container_runtime!();
+
+    let info = get_snmpd_container().await;
+    let target = format!("{}:{}", info.host, info.tcp_port);
+
+    let client = Client::builder(&target, Auth::v2c("public"))
+        .timeout(Duration::from_secs(5))
+        .connect_tcp()
+        .await
+        .expect("Failed to connect via TCP");
+
+    let mut walk = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("Failed to start walk");
+    let mut count = 0;
+
+    while let Some(result) = walk.next().await {
+        match result {
+            Ok(vb) => {
+                println!("TCP walk {}: {} = {:?}", count, vb.oid, vb.value);
+                count += 1;
+            }
+            Err(e) => panic!("TCP walk failed: {}", e),
+        }
+    }
+
+    assert!(count > 0, "Walk should return at least one varbind");
+    println!("TCP walk returned {} varbinds", count);
+}
+
+/// Test SNMPv3 over TCP transport.
+#[tokio::test]
+async fn test_tcp_transport_v3() {
+    require_container_runtime!();
+
+    let info = get_snmpd_container().await;
+    let target = format!("{}:{}", info.host, info.tcp_port);
+
+    let client = Client::builder(
+        &target,
+        Auth::usm(users::PRIVAES128_USER)
+            .auth(AuthProtocol::Sha1, AUTH_PASSWORD)
+            .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
+    )
+    .timeout(Duration::from_secs(10))
+    .connect_tcp()
+    .await
+    .expect("Failed to connect V3 via TCP");
+
+    let result = client.get(&oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)).await;
+
+    match result {
+        Ok(vb) => {
+            println!("TCP V3 sysDescr: {:?}", vb.value);
+            assert!(matches!(vb.value, Value::OctetString(_)));
+        }
+        Err(e) => panic!("TCP V3 GET failed: {}", e),
+    }
+}
+
+/// Test concurrent requests over TCP transport.
+///
+/// TCP serializes request-response pairs, so concurrent callers queue up.
+/// All requests should succeed.
+#[tokio::test]
+async fn test_tcp_transport_concurrent() {
+    require_container_runtime!();
+
+    let info = get_snmpd_container().await;
+    let target = format!("{}:{}", info.host, info.tcp_port);
+
+    let client = Client::builder(&target, Auth::v2c("public"))
+        .timeout(Duration::from_secs(10))
+        .connect_tcp()
+        .await
+        .expect("Failed to connect via TCP");
+
+    let oids = [
+        oid!(1, 3, 6, 1, 2, 1, 1, 1, 0), // sysDescr
+        oid!(1, 3, 6, 1, 2, 1, 1, 3, 0), // sysUpTime
+        oid!(1, 3, 6, 1, 2, 1, 1, 4, 0), // sysContact
+        oid!(1, 3, 6, 1, 2, 1, 1, 5, 0), // sysName
+        oid!(1, 3, 6, 1, 2, 1, 1, 6, 0), // sysLocation
+    ];
+
+    // Fire 10 concurrent requests
+    let futures: Vec<_> = (0..10)
+        .map(|i| {
+            let client = client.clone();
+            let oid = oids[i % oids.len()].clone();
+            async move { (i, oid.clone(), client.get(&oid).await) }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut success_count = 0;
+    for (i, expected_oid, result) in results {
+        match result {
+            Ok(vb) => {
+                assert_eq!(
+                    vb.oid, expected_oid,
+                    "Request {} got wrong OID: expected {}, got {}",
+                    i, expected_oid, vb.oid
+                );
+                success_count += 1;
+            }
+            Err(e) => {
+                println!("TCP concurrent request {} failed: {}", i, e);
+            }
+        }
+    }
+
+    println!(
+        "TCP concurrent test: {}/10 requests succeeded",
+        success_count
+    );
+
+    assert_eq!(
+        success_count, 10,
+        "All 10 TCP concurrent requests should succeed (serialized)"
     );
 }
