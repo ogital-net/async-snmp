@@ -25,18 +25,9 @@ pub enum SecurityModel {
     Usm = 3,
 }
 
-/// Access type for VACM checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccessType {
-    /// Read access (GET, GETNEXT, GETBULK).
-    Read,
-    /// Write access (SET).
-    Write,
-}
-
 /// Context matching mode for access entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ContextMatch {
+pub(crate) enum ContextMatch {
     /// Exact context name match.
     #[default]
     Exact,
@@ -180,7 +171,7 @@ pub struct VacmAccessEntry {
     /// Minimum security level required.
     pub security_level: SecurityLevel,
     /// Context matching mode.
-    pub context_match: ContextMatch,
+    pub(crate) context_match: ContextMatch,
     /// View name for read access.
     pub read_view: Bytes,
     /// View name for write access.
@@ -234,9 +225,13 @@ impl AccessEntryBuilder {
         self
     }
 
-    /// Set the context matching mode.
-    pub fn context_match(mut self, mode: ContextMatch) -> Self {
-        self.context_match = mode;
+    /// Set context matching to prefix mode.
+    ///
+    /// When enabled, the context prefix is matched against the start of
+    /// the request context name rather than requiring an exact match.
+    /// The default is exact matching.
+    pub fn context_match_prefix(mut self) -> Self {
+        self.context_match = ContextMatch::Prefix;
         self
     }
 

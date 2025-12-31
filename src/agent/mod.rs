@@ -70,7 +70,7 @@ mod response;
 mod set_handler;
 pub mod vacm;
 
-pub use vacm::{AccessType, ContextMatch, SecurityModel, VacmBuilder, VacmConfig, View};
+pub use vacm::{SecurityModel, VacmBuilder, VacmConfig, View};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

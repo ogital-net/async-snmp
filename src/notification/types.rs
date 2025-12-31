@@ -52,7 +52,7 @@ impl UsmUserConfig {
     }
 
     /// Derive keys localized to a specific engine ID.
-    pub fn derive_keys(&self, engine_id: &[u8]) -> DerivedKeys {
+    pub(crate) fn derive_keys(&self, engine_id: &[u8]) -> DerivedKeys {
         let auth_key = self.auth.as_ref().map(|(protocol, password)| {
             LocalizedKey::from_password(*protocol, password, engine_id)
         });
@@ -81,7 +81,7 @@ impl std::fmt::Debug for UsmUserConfig {
 /// Derived keys for a specific engine ID.
 ///
 /// Used internally by notification receiver and agent for V3 authentication.
-pub struct DerivedKeys {
+pub(crate) struct DerivedKeys {
     /// Localized authentication key
     pub auth_key: Option<LocalizedKey>,
     /// Privacy key
