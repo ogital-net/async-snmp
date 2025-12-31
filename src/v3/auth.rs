@@ -334,7 +334,7 @@ pub fn verify_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::{decode_hex, encode_hex};
+    use crate::format::hex::{decode as decode_hex, encode as encode_hex};
 
     #[test]
     fn test_password_to_key_md5() {

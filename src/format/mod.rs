@@ -20,5 +20,21 @@
 //! let ip = display_hint::apply("1d.1d.1d.1d", &[192, 168, 1, 1]);
 //! assert_eq!(ip, "192.168.1.1");
 //! ```
+//!
+//! ## Hex Encoding
+//!
+//! The [`hex`] module provides hexadecimal encoding and decoding utilities.
+//!
+//! ```
+//! use async_snmp::format::hex;
+//!
+//! // Encode bytes to hex string
+//! assert_eq!(hex::encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+//!
+//! // Lazy formatting for logging
+//! let data = [0x00, 0xff];
+//! println!("{}", hex::Bytes(&data)); // prints: 00ff
+//! ```
 
 pub mod display_hint;
+pub mod hex;

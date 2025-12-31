@@ -7,10 +7,10 @@ use crate::ber::Decoder;
 use crate::error::{
     AuthErrorKind, CryptoErrorKind, DecodeErrorKind, EncodeErrorKind, Error, ErrorStatus, Result,
 };
+use crate::format::hex;
 use crate::message::{MsgFlags, MsgGlobalData, ScopedPdu, SecurityLevel, V3Message};
 use crate::pdu::{Pdu, PduType};
 use crate::transport::Transport;
-use crate::util::HexBytes;
 use crate::v3::{AuthProtocol, PrivProtocol};
 use crate::v3::{
     LocalizedKey, PrivKey, UsmSecurityParams,
@@ -165,7 +165,7 @@ impl<T: Transport> Client<T> {
         // Extract engine state from USM params
         let engine_state = crate::v3::parse_discovery_response(&response.security_params)?;
         tracing::debug!(
-            snmp.engine_id = %HexBytes(&engine_state.engine_id),
+            snmp.engine_id = %hex::Bytes(&engine_state.engine_id),
             snmp.engine_boots = engine_state.engine_boots,
             snmp.engine_time = engine_state.engine_time,
             "discovered engine"

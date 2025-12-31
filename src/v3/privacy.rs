@@ -457,7 +457,7 @@ impl std::fmt::Debug for PrivKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::decode_hex;
+    use crate::format::hex::decode as decode_hex;
 
     #[test]
     fn test_des_encrypt_decrypt_roundtrip() {

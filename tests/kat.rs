@@ -8,7 +8,7 @@
 //! - RFC 6234: HMAC test vectors for SHA-1/SHA-2
 //! - RFC 3414 A.5: Key change vectors
 
-use async_snmp::testing::{decode_hex, encode_hex};
+use async_snmp::testing::{decode, encode};
 use async_snmp::v3::{AuthProtocol, LocalizedKey, PrivKey, PrivProtocol};
 
 /// RFC 3414 Appendix A.3.1: Password to Key using MD5
@@ -20,13 +20,13 @@ use async_snmp::v3::{AuthProtocol, LocalizedKey, PrivKey, PrivProtocol};
 #[test]
 fn test_rfc3414_a3_1_md5_key_localization() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Md5, password, &engine_id);
 
     assert_eq!(key.as_bytes().len(), 16);
     assert_eq!(
-        encode_hex(key.as_bytes()),
+        encode(key.as_bytes()),
         "526f5eed9fcce26f8964c2930787d82b",
         "MD5 localized key mismatch"
     );
@@ -41,13 +41,13 @@ fn test_rfc3414_a3_1_md5_key_localization() {
 #[test]
 fn test_rfc3414_a3_2_sha1_key_localization() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Sha1, password, &engine_id);
 
     assert_eq!(key.as_bytes().len(), 20);
     assert_eq!(
-        encode_hex(key.as_bytes()),
+        encode(key.as_bytes()),
         "6695febc9288e36282235fc7151f128497b38f3f",
         "SHA-1 localized key mismatch"
     );
@@ -62,13 +62,13 @@ fn test_rfc3414_a3_2_sha1_key_localization() {
 #[test]
 fn test_rfc3414_a5_1_md5_new_password_key() {
     let new_password = b"newsyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Md5, new_password, &engine_id);
 
     assert_eq!(key.as_bytes().len(), 16);
     assert_eq!(
-        encode_hex(key.as_bytes()),
+        encode(key.as_bytes()),
         "87021d7bd9d101ba05ea6e3bf9d9bd4a",
         "MD5 'newsyrup' localized key mismatch"
     );
@@ -82,13 +82,13 @@ fn test_rfc3414_a5_1_md5_new_password_key() {
 #[test]
 fn test_rfc3414_a5_2_sha1_new_password_key() {
     let new_password = b"newsyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Sha1, new_password, &engine_id);
 
     assert_eq!(key.as_bytes().len(), 20);
     assert_eq!(
-        encode_hex(key.as_bytes()),
+        encode(key.as_bytes()),
         "78e2dcce79d59403b58c1bbaa5bff46391f1cd25",
         "SHA-1 'newsyrup' localized key mismatch"
     );
@@ -101,7 +101,7 @@ fn test_rfc3414_a5_2_sha1_new_password_key() {
 #[test]
 fn test_sha224_key_localization() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Sha224, password, &engine_id);
 
@@ -117,7 +117,7 @@ fn test_sha224_key_localization() {
 #[test]
 fn test_sha256_key_localization() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Sha256, password, &engine_id);
 
@@ -133,7 +133,7 @@ fn test_sha256_key_localization() {
 #[test]
 fn test_sha384_key_localization() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Sha384, password, &engine_id);
 
@@ -149,7 +149,7 @@ fn test_sha384_key_localization() {
 #[test]
 fn test_sha512_key_localization() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key = LocalizedKey::from_password(AuthProtocol::Sha512, password, &engine_id);
 
@@ -184,7 +184,7 @@ fn test_rfc6234_hmac_case1_sha1() {
     // HMAC-SHA-96 truncates to 12 bytes
     assert_eq!(mac.len(), 12);
     // First 12 bytes of B617318655057264E28BC0B6FB378C8EF146BE00
-    assert_eq!(encode_hex(&mac), "b617318655057264e28bc0b6");
+    assert_eq!(encode(&mac), "b617318655057264e28bc0b6");
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn test_rfc6234_hmac_case1_sha224() {
     // HMAC-SHA-224 truncates to 16 bytes per RFC 7860
     assert_eq!(mac.len(), 16);
     // First 16 bytes of 896FB1128ABBDF196832107CD49DF33F47B4B1169912BA4F53684B22
-    assert_eq!(encode_hex(&mac), "896fb1128abbdf196832107cd49df33f");
+    assert_eq!(encode(&mac), "896fb1128abbdf196832107cd49df33f");
 }
 
 #[test]
@@ -213,7 +213,7 @@ fn test_rfc6234_hmac_case1_sha256() {
     assert_eq!(mac.len(), 24);
     // First 24 bytes of B0344C61D8DB38535CA8AFCEAF0BF12B881DC200C9833DA726E9376C2E32CFF7
     assert_eq!(
-        encode_hex(&mac),
+        encode(&mac),
         "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da7"
     );
 }
@@ -230,7 +230,7 @@ fn test_rfc6234_hmac_case1_sha384() {
     assert_eq!(mac.len(), 32);
     // First 32 bytes of AFD03944D84895626B0825F4AB46907F15F9DADBE4101EC682AA034C7CEBC59C...
     assert_eq!(
-        encode_hex(&mac),
+        encode(&mac),
         "afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59c"
     );
 }
@@ -247,7 +247,7 @@ fn test_rfc6234_hmac_case1_sha512() {
     assert_eq!(mac.len(), 48);
     // First 48 bytes of 87AA7CDEA5EF619D4FF0B4241A1D6CB02379F4E2CE4EC2787AD0B30545E17CDE...
     assert_eq!(
-        encode_hex(&mac),
+        encode(&mac),
         "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4"
     );
 }
@@ -263,7 +263,7 @@ fn test_rfc6234_hmac_case2_sha1() {
     let mac = key.compute_hmac(data);
 
     // First 12 bytes of EFFCDF6AE5EB2FA2D27416D5F184DF9C259A7C79
-    assert_eq!(encode_hex(&mac), "effcdf6ae5eb2fa2d27416d5");
+    assert_eq!(encode(&mac), "effcdf6ae5eb2fa2d27416d5");
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn test_rfc6234_hmac_case2_sha256() {
 
     // First 24 bytes of 5BDCC146BF60754E6A042426089575C75A003F089D2739839DEC58B964EC3843
     assert_eq!(
-        encode_hex(&mac),
+        encode(&mac),
         "5bdcc146bf60754e6a042426089575c75a003f089d273983"
     );
 }
@@ -302,7 +302,7 @@ fn test_rfc6234_hmac_case5_truncation_sha1() {
 
     // RFC truncates to 12 bytes for this test; our HMAC-SHA-96 also uses 12 bytes
     assert_eq!(mac.len(), 12);
-    assert_eq!(encode_hex(&mac), "4c1a03424b55e07fe7f27be1");
+    assert_eq!(encode(&mac), "4c1a03424b55e07fe7f27be1");
 }
 
 /// Verify HMAC verification works correctly with RFC test vectors.
@@ -346,7 +346,7 @@ fn test_hmac_verify_wrong_length() {
 #[test]
 fn test_des_priv_key_from_password() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     // DES privacy key uses MD5 localization (16 bytes needed)
     let priv_key =
@@ -355,7 +355,7 @@ fn test_des_priv_key_from_password() {
     // Encryption key should be first 8 bytes of the MD5 localized key
     // From RFC 3414 A.3.1: 526f5eed9fcce26f8964c2930787d82b
     // First 8 bytes: 526f5eed9fcce26f
-    assert_eq!(encode_hex(priv_key.encryption_key()), "526f5eed9fcce26f");
+    assert_eq!(encode(priv_key.encryption_key()), "526f5eed9fcce26f");
 }
 
 /// AES-128 privacy key derivation.
@@ -364,7 +364,7 @@ fn test_des_priv_key_from_password() {
 #[test]
 fn test_aes128_priv_key_from_password() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     // AES-128 uses SHA-1 localization (20 bytes, take first 16)
     let priv_key = PrivKey::from_password(
@@ -378,7 +378,7 @@ fn test_aes128_priv_key_from_password() {
     // From RFC 3414 A.3.2: 6695febc9288e36282235fc7151f128497b38f3f
     // First 16 bytes: 6695febc9288e36282235fc7151f1284
     assert_eq!(
-        encode_hex(priv_key.encryption_key()),
+        encode(priv_key.encryption_key()),
         "6695febc9288e36282235fc7151f1284"
     );
 }
@@ -389,7 +389,7 @@ fn test_aes128_priv_key_from_password() {
 #[test]
 fn test_aes256_priv_key_from_password() {
     let password = b"maplesyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     // AES-256 uses SHA-256 localization (32 bytes)
     let priv_key = PrivKey::from_password(
@@ -416,8 +416,8 @@ fn test_aes256_priv_key_from_password() {
 #[test]
 fn test_different_engine_ids_produce_different_keys() {
     let password = b"maplesyrup";
-    let engine_id_1 = decode_hex("000000000000000000000001").unwrap();
-    let engine_id_2 = decode_hex("000000000000000000000002").unwrap();
+    let engine_id_1 = decode("000000000000000000000001").unwrap();
+    let engine_id_2 = decode("000000000000000000000002").unwrap();
 
     let key1 = LocalizedKey::from_password(AuthProtocol::Sha1, password, &engine_id_1);
     let key2 = LocalizedKey::from_password(AuthProtocol::Sha1, password, &engine_id_2);
@@ -431,7 +431,7 @@ fn test_different_engine_ids_produce_different_keys() {
 fn test_different_passwords_produce_different_keys() {
     let password_1 = b"maplesyrup";
     let password_2 = b"newsyrup";
-    let engine_id = decode_hex("000000000000000000000002").unwrap();
+    let engine_id = decode("000000000000000000000002").unwrap();
 
     let key1 = LocalizedKey::from_password(AuthProtocol::Sha1, password_1, &engine_id);
     let key2 = LocalizedKey::from_password(AuthProtocol::Sha1, password_2, &engine_id);
@@ -496,7 +496,7 @@ fn test_rfc3414_a4_usm_encoding() {
 
     // Engine ID from RFC example: 80000002 01 09840301 (IBM enterprise, IPv4, 9.132.3.1)
     // RFC shows 12-byte engine_id in the example hex dump (04 0c prefix)
-    let engine_id = decode_hex("800000020109840301000000").unwrap();
+    let engine_id = decode("800000020109840301000000").unwrap();
 
     let params = UsmSecurityParams::new(
         Bytes::from(engine_id),
@@ -504,8 +504,8 @@ fn test_rfc3414_a4_usm_encoding() {
         257, // time (0x0101)
         Bytes::from_static(b"bert"),
     )
-    .with_auth_params(Bytes::from(decode_hex("0123456789abcdeffedcba98").unwrap()))
-    .with_priv_params(Bytes::from(decode_hex("0123456789abcdef").unwrap()));
+    .with_auth_params(Bytes::from(decode("0123456789abcdeffedcba98").unwrap()))
+    .with_priv_params(Bytes::from(decode("0123456789abcdef").unwrap()));
 
     let encoded = params.encode();
 

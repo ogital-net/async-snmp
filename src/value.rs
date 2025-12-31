@@ -4,8 +4,8 @@
 
 use crate::ber::{Decoder, EncodeBuf, tag};
 use crate::error::{DecodeErrorKind, Error, Result};
+use crate::format::hex;
 use crate::oid::Oid;
-use crate::util::encode_hex;
 use bytes::Bytes;
 
 /// SNMP value.
@@ -296,7 +296,7 @@ impl std::fmt::Display for Value {
                 if let Ok(s) = std::str::from_utf8(data) {
                     write!(f, "{}", s)
                 } else {
-                    write!(f, "0x{}", encode_hex(data))
+                    write!(f, "0x{}", hex::encode(data))
                 }
             }
             Value::Null => write!(f, "NULL"),
@@ -315,13 +315,18 @@ impl std::fmt::Display for Value {
                 let s = secs % 60;
                 write!(f, "{}d {}h {}m {}s", days, hours, mins, s)
             }
-            Value::Opaque(data) => write!(f, "Opaque(0x{})", encode_hex(data)),
+            Value::Opaque(data) => write!(f, "Opaque(0x{})", hex::encode(data)),
             Value::Counter64(v) => write!(f, "{}", v),
             Value::NoSuchObject => write!(f, "noSuchObject"),
             Value::NoSuchInstance => write!(f, "noSuchInstance"),
             Value::EndOfMibView => write!(f, "endOfMibView"),
             Value::Unknown { tag, data } => {
-                write!(f, "Unknown(tag=0x{:02X}, data=0x{})", tag, encode_hex(data))
+                write!(
+                    f,
+                    "Unknown(tag=0x{:02X}, data=0x{})",
+                    tag,
+                    hex::encode(data)
+                )
             }
         }
     }

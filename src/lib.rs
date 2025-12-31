@@ -123,5 +123,5 @@ pub type TcpClient = Client<TcpTransport>;
 /// Testing utilities exposed via the `testing` feature.
 #[cfg(feature = "testing")]
 pub mod testing {
-    pub use crate::util::{HexDecodeError, decode_hex, encode_hex};
+    pub use crate::format::hex::{Bytes as HexBytes, DecodeError, decode, encode};
 }
