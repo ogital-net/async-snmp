@@ -5,7 +5,5 @@
 #![allow(unused_imports)]
 
 mod fixtures;
-mod stream;
 
 pub use fixtures::*;
-pub use stream::collect_stream;

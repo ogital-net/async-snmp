@@ -24,9 +24,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_snmp::{Auth, Client, SharedUdpTransport, Value, oid};
-use common::{
-    AUTH_PASSWORD, COMMUNITY_RW, PRIV_PASSWORD, collect_stream, parse_image, snmpd_image, users,
-};
+use common::{AUTH_PASSWORD, COMMUNITY_RW, PRIV_PASSWORD, parse_image, snmpd_image, users};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
@@ -301,39 +299,34 @@ async fn test_walk_system() {
     require_container_runtime!();
 
     let client = create_v2c_client().await;
-    let walk = client.walk(oid!(1, 3, 6, 1, 2, 1, 1));
-
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 20).await;
+    let results = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("walk creation failed")
+        .collect()
+        .await
+        .expect("walk failed");
 
     println!("Walk returned {} items:", results.len());
-    let mut ok_count = 0;
     let mut prev_oid: Option<async_snmp::Oid> = None;
-    for result in &results {
-        match result {
-            Ok(vb) => {
-                println!("  {}: {:?}", vb.oid, vb.value);
-                assert!(vb.oid.starts_with(&oid!(1, 3, 6, 1, 2, 1, 1)));
-                // Verify lexicographic ordering
-                if let Some(ref prev) = prev_oid {
-                    assert!(
-                        vb.oid > *prev,
-                        "OIDs not in order: {} should be > {}",
-                        vb.oid,
-                        prev
-                    );
-                }
-                prev_oid = Some(vb.oid.clone());
-                ok_count += 1;
-            }
-            Err(e) => println!("  Error: {}", e),
+    for vb in &results {
+        println!("  {}: {:?}", vb.oid, vb.value);
+        assert!(vb.oid.starts_with(&oid!(1, 3, 6, 1, 2, 1, 1)));
+        // Verify lexicographic ordering
+        if let Some(ref prev) = prev_oid {
+            assert!(
+                vb.oid > *prev,
+                "OIDs not in order: {} should be > {}",
+                vb.oid,
+                prev
+            );
         }
+        prev_oid = Some(vb.oid.clone());
     }
 
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }
 
@@ -342,28 +335,22 @@ async fn test_bulk_walk_system() {
     require_container_runtime!();
 
     let client = create_v2c_client().await;
-    let walk = client.bulk_walk(oid!(1, 3, 6, 1, 2, 1, 1), 10);
-
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 50).await;
+    let results = client
+        .bulk_walk(oid!(1, 3, 6, 1, 2, 1, 1), 10)
+        .collect()
+        .await
+        .expect("bulk_walk failed");
 
     println!("BulkWalk returned {} items:", results.len());
-    let mut ok_count = 0;
-    for result in &results {
-        match result {
-            Ok(vb) => {
-                println!("  {}: {:?}", vb.oid, vb.value);
-                assert!(vb.oid.starts_with(&oid!(1, 3, 6, 1, 2, 1, 1)));
-                ok_count += 1;
-            }
-            Err(e) => println!("  Error: {}", e),
-        }
+    for vb in &results {
+        println!("  {}: {:?}", vb.oid, vb.value);
+        assert!(vb.oid.starts_with(&oid!(1, 3, 6, 1, 2, 1, 1)));
     }
 
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }
 
@@ -372,22 +359,16 @@ async fn test_walk_interfaces() {
     require_container_runtime!();
 
     let client = create_v2c_client().await;
-    let walk = client.bulk_walk(oid!(1, 3, 6, 1, 2, 1, 2), 25);
-
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 100).await;
+    let results = client
+        .bulk_walk(oid!(1, 3, 6, 1, 2, 1, 2), 25)
+        .collect()
+        .await
+        .expect("interfaces walk failed");
 
     println!("Interfaces walk returned {} items", results.len());
 
-    let ok_count = results.iter().filter(|r| r.is_ok()).count();
-    println!(
-        "  {} successful, {} errors",
-        ok_count,
-        results.len() - ok_count
-    );
-
     // Should have at least ifNumber and some interface entries
-    assert!(ok_count >= 1);
+    assert!(!results.is_empty());
 }
 
 #[tokio::test]
@@ -567,17 +548,19 @@ async fn test_shared_transport_walk() {
         .build(shared.handle(target))
         .expect("Failed to build client");
 
-    let walk = client.walk(oid!(1, 3, 6, 1, 2, 1, 1));
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 20).await;
+    let results = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("walk creation failed")
+        .collect()
+        .await
+        .expect("walk failed");
 
-    let ok_count = results.iter().filter(|r| r.is_ok()).count();
-    println!("SharedTransport walk returned {} items", ok_count);
+    println!("SharedTransport walk returned {} items", results.len());
 
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }
 
@@ -646,26 +629,22 @@ async fn test_v3_walk() {
     require_container_runtime!();
 
     let client = create_v3_client().await;
-    let walk = client.walk(oid!(1, 3, 6, 1, 2, 1, 1));
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 20).await;
+    let results = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("walk creation failed")
+        .collect()
+        .await
+        .expect("walk failed");
 
     println!("V3 Walk returned {} items:", results.len());
-    let mut ok_count = 0;
-    for result in &results {
-        match result {
-            Ok(vb) => {
-                println!("  {}: {:?}", vb.oid, vb.value);
-                ok_count += 1;
-            }
-            Err(e) => println!("  Error: {}", e),
-        }
+    for vb in &results {
+        println!("  {}: {:?}", vb.oid, vb.value);
     }
 
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }
 
@@ -1231,16 +1210,18 @@ async fn test_v3_noauthnopriv_walk() {
         .await
         .expect("Failed to connect V3 noAuthNoPriv");
 
-    let walk = client.walk(oid!(1, 3, 6, 1, 2, 1, 1));
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 20).await;
+    let results = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("walk creation failed")
+        .collect()
+        .await
+        .expect("walk failed");
 
     println!("V3 noAuthNoPriv Walk returned {} items", results.len());
-    let ok_count = results.iter().filter(|r| r.is_ok()).count();
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }
 
@@ -1504,16 +1485,18 @@ async fn test_v3_priv_aes192_walk() {
     .await
     .expect("Failed to connect V3 AES-192");
 
-    let walk = client.walk(oid!(1, 3, 6, 1, 2, 1, 1));
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 20).await;
+    let results = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("walk creation failed")
+        .collect()
+        .await
+        .expect("walk failed");
 
     println!("V3 AES-192 Walk returned {} items", results.len());
-    let ok_count = results.iter().filter(|r| r.is_ok()).count();
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }
 
@@ -1536,15 +1519,17 @@ async fn test_v3_priv_aes256_walk() {
     .await
     .expect("Failed to connect V3 AES-256");
 
-    let walk = client.walk(oid!(1, 3, 6, 1, 2, 1, 1));
-    let mut pinned = Box::pin(walk);
-    let results = collect_stream(pinned.as_mut(), 20).await;
+    let results = client
+        .walk(oid!(1, 3, 6, 1, 2, 1, 1))
+        .expect("walk creation failed")
+        .collect()
+        .await
+        .expect("walk failed");
 
     println!("V3 AES-256 Walk returned {} items", results.len());
-    let ok_count = results.iter().filter(|r| r.is_ok()).count();
     assert!(
-        ok_count >= 5,
+        results.len() >= 5,
         "Expected at least 5 system OIDs, got {}",
-        ok_count
+        results.len()
     );
 }

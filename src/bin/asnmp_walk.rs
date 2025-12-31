@@ -8,13 +8,9 @@ use async_snmp::cli::output::{
     OperationType, OutputContext, RequestInfo, SecurityInfo, write_error, write_verbose_request,
     write_verbose_response,
 };
-use async_snmp::{Client, Oid, VarBind};
+use async_snmp::{Client, Oid, VarBind, WalkMode};
 use clap::Parser;
-use futures_core::Stream;
-use std::future::poll_fn;
-use std::pin::Pin;
 use std::process::ExitCode;
-use std::task::Context;
 use std::time::Instant;
 
 /// Walk an SNMP subtree using GETNEXT or GETBULK.
@@ -161,39 +157,21 @@ async fn run_walk(
         .auth(&args.common)
         .map_err(|e| async_snmp::Error::Config(e.to_string()))?;
 
+    // Set walk mode based on CLI flags
+    let walk_mode = if use_getnext {
+        WalkMode::GetNext
+    } else {
+        WalkMode::GetBulk
+    };
+
     let client = Client::builder(target.to_string(), auth)
         .timeout(args.common.timeout_duration())
         .retries(args.common.retries)
+        .walk_mode(walk_mode)
+        .max_repetitions(args.walk.max_repetitions)
         .connect()
         .await?;
 
-    if use_getnext {
-        let walk = client.walk(oid);
-        collect_walk(walk).await
-    } else {
-        let max_repetitions = args.walk.max_repetitions as i32;
-        let walk = client.bulk_walk(oid, max_repetitions);
-        collect_walk(walk).await
-    }
-}
-
-/// Collect all items from a walk stream.
-async fn collect_walk<S>(walk: S) -> async_snmp::Result<Vec<VarBind>>
-where
-    S: Stream<Item = async_snmp::Result<VarBind>> + Unpin,
-{
-    let mut pinned = Box::pin(walk);
-    let mut results = Vec::new();
-
-    loop {
-        let item = poll_fn(|cx: &mut Context<'_>| Pin::new(&mut pinned).poll_next(cx)).await;
-
-        match item {
-            Some(Ok(vb)) => results.push(vb),
-            Some(Err(e)) => return Err(e),
-            None => break,
-        }
-    }
-
-    Ok(results)
+    // Use unified walk() which respects the walk_mode setting
+    client.walk(oid)?.collect().await
 }
