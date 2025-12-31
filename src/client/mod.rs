@@ -1,12 +1,12 @@
 //! SNMP client implementation.
 
 mod auth;
-mod new_builder;
+mod builder;
 mod v3;
 mod walk;
 
 pub use auth::{Auth, CommunityVersion, UsmAuth, UsmBuilder};
-pub use new_builder::ClientBuilder;
+pub use builder::ClientBuilder;
 
 // New unified entry point
 impl Client<UdpTransport> {
