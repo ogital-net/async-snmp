@@ -1778,3 +1778,289 @@ async fn test_v3_priv_aes256_walk() {
         results.len()
     );
 }
+
+// ============================================================================
+// UdpTransport Concurrent Access Tests
+// ============================================================================
+//
+// These tests validate that UdpTransport handles concurrent requests correctly.
+// Responses are correlated by request_id, allowing multiple concurrent callers
+// to share the same transport without mixing up responses.
+
+/// Test concurrent GET requests through a single UdpTransport.
+///
+/// Creates one client and fires 10 concurrent requests for different OIDs.
+/// Each request should receive its correct response.
+#[tokio::test]
+async fn test_udp_transport_concurrent_gets() {
+    require_container_runtime!();
+
+    let client = create_v2c_client().await;
+
+    // Fire 10 concurrent requests for different OIDs
+    let oids = [
+        oid!(1, 3, 6, 1, 2, 1, 1, 1, 0), // sysDescr
+        oid!(1, 3, 6, 1, 2, 1, 1, 3, 0), // sysUpTime
+        oid!(1, 3, 6, 1, 2, 1, 1, 4, 0), // sysContact
+        oid!(1, 3, 6, 1, 2, 1, 1, 5, 0), // sysName
+        oid!(1, 3, 6, 1, 2, 1, 1, 6, 0), // sysLocation
+    ];
+
+    // Create 10 concurrent tasks (2 requests per OID)
+    let futures: Vec<_> = (0..10)
+        .map(|i| {
+            let client = client.clone();
+            let oid = oids[i % oids.len()].clone();
+            async move { (i, oid.clone(), client.get(&oid).await) }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut success_count = 0;
+    let mut failure_count = 0;
+    let mut mismatch_count = 0;
+
+    for (i, expected_oid, result) in results {
+        match result {
+            Ok(vb) => {
+                if vb.oid == expected_oid {
+                    success_count += 1;
+                } else {
+                    println!(
+                        "Request {} OID mismatch: expected {}, got {}",
+                        i, expected_oid, vb.oid
+                    );
+                    mismatch_count += 1;
+                }
+            }
+            Err(e) => {
+                println!("Request {} failed: {}", i, e);
+                failure_count += 1;
+            }
+        }
+    }
+
+    println!(
+        "UdpTransport concurrent test: {} success, {} failures, {} mismatches",
+        success_count, failure_count, mismatch_count
+    );
+
+    // All requests should succeed with correct OIDs
+    assert_eq!(
+        success_count, 10,
+        "Expected all 10 requests to succeed with correct OIDs, but {} succeeded, {} failed, {} mismatched",
+        success_count, failure_count, mismatch_count
+    );
+}
+
+/// Test high concurrency through a single UdpTransport.
+///
+/// Creates 20 concurrent tasks all sharing the same UdpTransport,
+/// verifying that request_id correlation handles high contention.
+#[tokio::test]
+async fn test_udp_transport_high_concurrency() {
+    require_container_runtime!();
+
+    let client = create_v2c_client().await;
+    let oid = oid!(1, 3, 6, 1, 2, 1, 1, 1, 0); // sysDescr
+
+    // Create 20 concurrent requests for the same OID
+    let futures: Vec<_> = (0..20)
+        .map(|i| {
+            let client = client.clone();
+            let oid = oid.clone();
+            async move { (i, client.get(&oid).await) }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    let success_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+    let failure_count = results.len() - success_count;
+
+    println!(
+        "UdpTransport high concurrency test: {}/{} succeeded",
+        success_count,
+        results.len()
+    );
+
+    for (i, result) in &results {
+        if let Err(e) = result {
+            println!("  Request {} failed: {}", i, e);
+        }
+    }
+
+    // All 20 requests should succeed
+    assert_eq!(
+        success_count, 20,
+        "Expected all 20 requests to succeed, but only {} did ({} failed)",
+        success_count, failure_count
+    );
+}
+
+// ============================================================================
+// SharedUdpTransport V3 Extraction Tests
+// ============================================================================
+//
+// These tests validate that SharedUdpTransport correctly extracts msgID from
+// SNMPv3 messages for response correlation.
+
+/// Test concurrent V3 requests through SharedUdpTransport.
+///
+/// This tests that the extract_request_id function correctly handles V3
+/// messages where msgID is in msgGlobalData (SEQUENCE) rather than after
+/// a community string (OCTET STRING) as in V1/V2c.
+#[tokio::test]
+async fn test_shared_transport_v3_concurrent() {
+    require_container_runtime!();
+
+    let info = get_v3_container().await;
+    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+
+    let shared = SharedUdpTransport::builder()
+        .bind("0.0.0.0:0")
+        .build()
+        .await
+        .expect("Failed to bind shared transport");
+
+    // Create 5 V3 clients all sharing the transport
+    let clients: Vec<_> = (0..5)
+        .map(|_| {
+            Client::builder(
+                target.to_string(),
+                Auth::usm(users::PRIVAES128_USER)
+                    .auth(AuthProtocol::Sha1, AUTH_PASSWORD)
+                    .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
+            )
+            .timeout(Duration::from_secs(10))
+            .retries(1)
+            .build(shared.handle(target))
+            .expect("Failed to build client")
+        })
+        .collect();
+
+    // Fire concurrent GET requests
+    let oid = oid!(1, 3, 6, 1, 2, 1, 1, 1, 0); // sysDescr
+    let futures: Vec<_> = clients.iter().map(|c| c.get(&oid)).collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut success_count = 0;
+    for (i, result) in results.iter().enumerate() {
+        match result {
+            Ok(vb) => {
+                assert!(
+                    matches!(vb.value, Value::OctetString(_)),
+                    "Client {} got unexpected value type: {:?}",
+                    i,
+                    vb.value
+                );
+                success_count += 1;
+            }
+            Err(e) => {
+                println!("V3 Client {} failed: {}", i, e);
+            }
+        }
+    }
+
+    println!(
+        "SharedTransport V3 concurrent test: {}/{} succeeded",
+        success_count,
+        clients.len()
+    );
+
+    // All requests should succeed
+    assert_eq!(
+        success_count,
+        clients.len(),
+        "Expected all {} V3 requests to succeed, but only {} did",
+        clients.len(),
+        success_count
+    );
+}
+
+/// Test concurrent V3 requests with different OIDs through SharedUdpTransport.
+///
+/// Each client requests a different OID to ensure responses are correctly
+/// correlated even when the response content differs.
+#[tokio::test]
+async fn test_shared_transport_v3_concurrent_different_oids() {
+    require_container_runtime!();
+
+    let info = get_v3_container().await;
+    let target: SocketAddr = format!("127.0.0.1:{}", info.port).parse().unwrap();
+
+    let shared = SharedUdpTransport::builder()
+        .bind("0.0.0.0:0")
+        .build()
+        .await
+        .expect("Failed to bind shared transport");
+
+    let oids = [
+        oid!(1, 3, 6, 1, 2, 1, 1, 1, 0), // sysDescr
+        oid!(1, 3, 6, 1, 2, 1, 1, 3, 0), // sysUpTime
+        oid!(1, 3, 6, 1, 2, 1, 1, 4, 0), // sysContact
+        oid!(1, 3, 6, 1, 2, 1, 1, 5, 0), // sysName
+        oid!(1, 3, 6, 1, 2, 1, 1, 6, 0), // sysLocation
+    ];
+
+    // Create 10 V3 clients sharing the transport
+    let clients: Vec<_> = (0..10)
+        .map(|_| {
+            Client::builder(
+                target.to_string(),
+                Auth::usm(users::PRIVAES128_USER)
+                    .auth(AuthProtocol::Sha1, AUTH_PASSWORD)
+                    .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
+            )
+            .timeout(Duration::from_secs(10))
+            .retries(1)
+            .build(shared.handle(target))
+            .expect("Failed to build client")
+        })
+        .collect();
+
+    // Each client requests a different OID (cycling)
+    let futures: Vec<_> = clients
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let oid = oids[i % oids.len()].clone();
+            async move { (i, oid.clone(), c.get(&oid).await) }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut success_count = 0;
+    for (i, expected_oid, result) in &results {
+        match result {
+            Ok(vb) => {
+                assert_eq!(
+                    vb.oid, *expected_oid,
+                    "V3 Client {} got wrong OID: expected {}, got {}",
+                    i, expected_oid, vb.oid
+                );
+                success_count += 1;
+            }
+            Err(e) => {
+                println!("V3 Client {} failed requesting {}: {}", i, expected_oid, e);
+            }
+        }
+    }
+
+    println!(
+        "SharedTransport V3 different-OID test: {}/{} succeeded with correct correlation",
+        success_count,
+        clients.len()
+    );
+
+    // All requests should succeed with correct OIDs
+    assert_eq!(
+        success_count,
+        clients.len(),
+        "Expected all {} V3 requests to succeed with correct OIDs",
+        clients.len()
+    );
+}

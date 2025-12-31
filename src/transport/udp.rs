@@ -1,12 +1,13 @@
 //! UDP transport implementation.
 
-use super::Transport;
+use super::{Transport, extract_request_id};
 use crate::error::{Error, Result};
 use crate::util::bind_ephemeral_udp_socket;
 use bytes::Bytes;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
@@ -14,6 +15,12 @@ use tokio::time::timeout;
 ///
 /// Each `UdpTransport` owns a connected UDP socket to a specific target.
 /// For high-throughput scenarios with many targets, use `SharedUdpTransport` instead.
+///
+/// ## Concurrent Request Handling
+///
+/// When multiple concurrent requests are made through the same `UdpTransport`,
+/// responses are properly correlated using request IDs. If a caller receives a
+/// response for a different request, it buffers the response for the correct caller.
 #[derive(Clone)]
 pub struct UdpTransport {
     inner: Arc<UdpTransportInner>,
@@ -23,6 +30,8 @@ struct UdpTransportInner {
     socket: UdpSocket,
     target: SocketAddr,
     local_addr: SocketAddr,
+    /// Buffer for responses received by one caller but intended for another.
+    pending: Mutex<HashMap<i32, Bytes>>,
 }
 
 impl UdpTransport {
@@ -61,6 +70,7 @@ impl UdpTransport {
                 socket,
                 target,
                 local_addr,
+                pending: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -107,43 +117,105 @@ impl Transport for UdpTransport {
             "UDP recv waiting"
         );
 
-        let mut buf = vec![0u8; 65535];
+        let deadline = Instant::now() + recv_timeout;
 
-        let result = timeout(recv_timeout, self.inner.socket.recv(&mut buf)).await;
+        loop {
+            // Check pending buffer first
+            {
+                let mut pending = self.inner.pending.lock().unwrap();
+                if let Some(data) = pending.remove(&request_id) {
+                    tracing::trace!(
+                        snmp.target = %self.inner.target,
+                        snmp.request_id = request_id,
+                        snmp.bytes = data.len(),
+                        "UDP recv from pending buffer"
+                    );
+                    return Ok((data, self.inner.target));
+                }
+            }
 
-        match result {
-            Ok(Ok(len)) => {
-                buf.truncate(len);
-                tracing::trace!(
-                    snmp.target = %self.inner.target,
-                    snmp.bytes = len,
-                    "UDP recv complete"
-                );
-                Ok((Bytes::from(buf), self.inner.target))
-            }
-            Ok(Err(e)) => {
-                tracing::trace!(
-                    snmp.target = %self.inner.target,
-                    error = %e,
-                    "UDP recv error"
-                );
-                Err(Error::Io {
-                    target: Some(self.inner.target),
-                    source: e,
-                })
-            }
-            Err(_) => {
+            // Calculate remaining time
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 tracing::trace!(
                     snmp.target = %self.inner.target,
                     snmp.request_id = request_id,
                     "UDP recv timeout"
                 );
-                Err(Error::Timeout {
+                return Err(Error::Timeout {
                     target: Some(self.inner.target),
                     elapsed: recv_timeout,
                     request_id,
                     retries: 0,
-                })
+                });
+            }
+
+            // Try to receive from socket
+            let mut buf = vec![0u8; 65535];
+            let result = timeout(remaining, self.inner.socket.recv(&mut buf)).await;
+
+            match result {
+                Ok(Ok(len)) => {
+                    buf.truncate(len);
+                    let data = Bytes::from(buf);
+
+                    // Extract request_id from response
+                    if let Some(recv_id) = extract_request_id(&data) {
+                        if recv_id == request_id {
+                            tracing::trace!(
+                                snmp.target = %self.inner.target,
+                                snmp.request_id = request_id,
+                                snmp.bytes = len,
+                                "UDP recv complete"
+                            );
+                            return Ok((data, self.inner.target));
+                        } else {
+                            // Buffer for another caller
+                            tracing::trace!(
+                                snmp.target = %self.inner.target,
+                                snmp.expected_id = request_id,
+                                snmp.received_id = recv_id,
+                                snmp.bytes = len,
+                                "UDP recv buffered for different request"
+                            );
+                            let mut pending = self.inner.pending.lock().unwrap();
+                            pending.insert(recv_id, data);
+                            // Continue loop to try again
+                        }
+                    } else {
+                        // Could not extract request_id (malformed packet)
+                        // Log and continue to try again
+                        tracing::warn!(
+                            snmp.target = %self.inner.target,
+                            snmp.bytes = len,
+                            "UDP recv could not extract request_id, discarding"
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::trace!(
+                        snmp.target = %self.inner.target,
+                        error = %e,
+                        "UDP recv error"
+                    );
+                    return Err(Error::Io {
+                        target: Some(self.inner.target),
+                        source: e,
+                    });
+                }
+                Err(_) => {
+                    tracing::trace!(
+                        snmp.target = %self.inner.target,
+                        snmp.request_id = request_id,
+                        "UDP recv timeout"
+                    );
+                    return Err(Error::Timeout {
+                        target: Some(self.inner.target),
+                        elapsed: recv_timeout,
+                        request_id,
+                        retries: 0,
+                    });
+                }
             }
         }
     }

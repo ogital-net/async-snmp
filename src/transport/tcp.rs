@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::timeout;
 
 /// Maximum SNMP message size for TCP (per net-snmp SNMP_MAX_PACKET_LEN).
@@ -28,14 +28,22 @@ const MAX_TCP_MESSAGE_SIZE: usize = 0x7fffffff;
 ///
 /// Since TCP guarantees delivery or failure, the client does not retry
 /// on timeout when using TCP transport (`is_stream() = true`).
+///
+/// ## Concurrent Request Handling
+///
+/// Request-response pairs are serialized to ensure correct correlation.
+/// The stream lock is held from `send()` until `recv()` completes,
+/// preventing interleaving of concurrent requests.
 #[derive(Clone)]
 pub struct TcpTransport {
     inner: Arc<TcpTransportInner>,
 }
 
 struct TcpTransportInner {
-    /// The TCP stream, protected by mutex for concurrent access
-    stream: Mutex<TcpStream>,
+    /// The TCP stream, wrapped in Arc for owned guard pattern
+    stream: Arc<Mutex<TcpStream>>,
+    /// Holds the stream lock between send() and recv() to serialize operations
+    active_guard: std::sync::Mutex<Option<OwnedMutexGuard<TcpStream>>>,
     target: SocketAddr,
     local_addr: SocketAddr,
 }
@@ -55,7 +63,8 @@ impl TcpTransport {
 
         Ok(Self {
             inner: Arc::new(TcpTransportInner {
-                stream: Mutex::new(stream),
+                stream: Arc::new(Mutex::new(stream)),
+                active_guard: std::sync::Mutex::new(None),
                 target,
                 local_addr,
             }),
@@ -84,7 +93,8 @@ impl TcpTransport {
 
         Ok(Self {
             inner: Arc::new(TcpTransportInner {
-                stream: Mutex::new(stream),
+                stream: Arc::new(Mutex::new(stream)),
+                active_guard: std::sync::Mutex::new(None),
                 target,
                 local_addr,
             }),
@@ -94,22 +104,49 @@ impl TcpTransport {
 
 impl Transport for TcpTransport {
     async fn send(&self, data: &[u8]) -> Result<()> {
-        let mut stream = self.inner.stream.lock().await;
-        stream.write_all(data).await.map_err(|e| Error::Io {
-            target: Some(self.inner.target),
-            source: e,
-        })?;
-        stream.flush().await.map_err(|e| Error::Io {
-            target: Some(self.inner.target),
-            source: e,
-        })?;
-        Ok(())
+        // Acquire owned lock and hold it until recv() completes.
+        // This serializes request-response pairs for concurrent callers.
+        let mut stream = self.inner.stream.clone().lock_owned().await;
+
+        let result = async {
+            stream.write_all(data).await.map_err(|e| Error::Io {
+                target: Some(self.inner.target),
+                source: e,
+            })?;
+            stream.flush().await.map_err(|e| Error::Io {
+                target: Some(self.inner.target),
+                source: e,
+            })?;
+            Ok::<_, Error>(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                // Store the guard to hold the lock until recv()
+                *self.inner.active_guard.lock().unwrap() = Some(stream);
+                Ok(())
+            }
+            Err(e) => {
+                // On error, guard is dropped and lock released
+                Err(e)
+            }
+        }
     }
 
     async fn recv(&self, request_id: i32, recv_timeout: Duration) -> Result<(Bytes, SocketAddr)> {
-        let mut stream = self.inner.stream.lock().await;
+        // Take the guard that was stored by send().
+        // This ensures we're reading the response for our request.
+        let mut stream = self
+            .inner
+            .active_guard
+            .lock()
+            .unwrap()
+            .take()
+            .expect("recv() called without prior send() - this is a bug");
 
-        // Read a complete BER-encoded message using the framing protocol
+        // Read a complete BER-encoded message using the framing protocol.
+        // The guard is dropped when this function returns, releasing the lock.
         let result = timeout(recv_timeout, read_ber_message(&mut stream)).await;
 
         match result {
