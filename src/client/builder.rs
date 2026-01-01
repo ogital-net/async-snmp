@@ -99,12 +99,42 @@ impl ClientBuilder {
     }
 
     /// Set the request timeout (default: 5 seconds).
+    ///
+    /// This is the time to wait for a response before retrying or failing.
+    /// The total time for a request may be `timeout * (retries + 1)`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder};
+    /// use std::time::Duration;
+    ///
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .timeout(Duration::from_secs(10));
+    /// ```
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Set the number of retries (default: 3).
+    ///
+    /// The client will retry failed requests up to this many times before
+    /// returning an error. Set to 0 to disable retries.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder};
+    ///
+    /// // Increase retries for unreliable networks
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .retries(5);
+    ///
+    /// // Disable retries for fast failure detection
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .retries(0);
+    /// ```
     pub fn retries(mut self, retries: u32) -> Self {
         self.retries = retries;
         self
@@ -113,7 +143,22 @@ impl ClientBuilder {
     /// Set the maximum OIDs per request (default: 10).
     ///
     /// Requests with more OIDs than this limit are automatically split
-    /// into multiple batches.
+    /// into multiple batches. Some devices have lower limits on the number
+    /// of OIDs they can handle in a single request.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder};
+    ///
+    /// // For devices with limited request handling capacity
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .max_oids_per_request(5);
+    ///
+    /// // For high-capacity devices, increase to reduce round-trips
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .max_oids_per_request(50);
+    /// ```
     pub fn max_oids_per_request(mut self, max: usize) -> Self {
         self.max_oids_per_request = max;
         self
@@ -123,6 +168,20 @@ impl ClientBuilder {
     ///
     /// Controls how many rows are requested per GETBULK PDU during walk
     /// operations. Higher values reduce round-trips but increase response size.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder};
+    ///
+    /// // Reduce max-repetitions for devices with limited buffer sizes
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .max_repetitions(10);
+    ///
+    /// // Increase for faster walks over reliable networks
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .max_repetitions(50);
+    /// ```
     pub fn max_repetitions(mut self, max: u32) -> Self {
         self.max_repetitions = max;
         self
@@ -133,6 +192,20 @@ impl ClientBuilder {
     /// - `WalkMode::Auto`: Use GETNEXT for v1, GETBULK for v2c/v3
     /// - `WalkMode::GetNext`: Always use GETNEXT (slower but more compatible)
     /// - `WalkMode::GetBulk`: Always use GETBULK (faster, errors on v1)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder, WalkMode};
+    ///
+    /// // Force GETNEXT for devices with broken GETBULK implementation
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .walk_mode(WalkMode::GetNext);
+    ///
+    /// // Force GETBULK for faster walks (only v2c/v3)
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .walk_mode(WalkMode::GetBulk);
+    /// ```
     pub fn walk_mode(mut self, mode: WalkMode) -> Self {
         self.walk_mode = mode;
         self
@@ -145,6 +218,16 @@ impl ClientBuilder {
     ///   detection. Uses O(n) memory to track seen OIDs.
     ///
     /// Use `AllowNonIncreasing` for buggy agents that return OIDs out of order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder, OidOrdering};
+    ///
+    /// // Use relaxed ordering for devices that return OIDs out of order
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .oid_ordering(OidOrdering::AllowNonIncreasing);
+    /// ```
     pub fn oid_ordering(mut self, ordering: OidOrdering) -> Self {
         self.oid_ordering = ordering;
         self
@@ -154,6 +237,16 @@ impl ClientBuilder {
     ///
     /// Safety limit to prevent runaway walks. Walk terminates normally when
     /// limit is reached.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, ClientBuilder};
+    ///
+    /// // Limit walks to at most 10,000 results
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .max_walk_results(10_000);
+    /// ```
     pub fn max_walk_results(mut self, limit: usize) -> Self {
         self.max_walk_results = Some(limit);
         self
@@ -162,7 +255,27 @@ impl ClientBuilder {
     /// Set shared engine cache (V3 only, for high-throughput polling).
     ///
     /// Allows multiple clients to share discovered engine state, reducing
-    /// the number of discovery requests.
+    /// the number of discovery requests. This is particularly useful when
+    /// polling many devices with SNMPv3.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, AuthProtocol, ClientBuilder, EngineCache};
+    /// use std::sync::Arc;
+    ///
+    /// // Create a shared engine cache
+    /// let cache = Arc::new(EngineCache::new());
+    ///
+    /// // Multiple clients can share the same cache
+    /// let builder1 = ClientBuilder::new("192.168.1.1:161",
+    ///     Auth::usm("admin").auth(AuthProtocol::Sha256, "password"))
+    ///     .engine_cache(cache.clone());
+    ///
+    /// let builder2 = ClientBuilder::new("192.168.1.2:161",
+    ///     Auth::usm("admin").auth(AuthProtocol::Sha256, "password"))
+    ///     .engine_cache(cache.clone());
+    /// ```
     pub fn engine_cache(mut self, cache: Arc<EngineCache>) -> Self {
         self.engine_cache = Some(cache);
         self
@@ -300,9 +413,29 @@ impl ClientBuilder {
 
     /// Connect via UDP (default).
     ///
+    /// Creates a new UDP socket and connects to the target address. This is the
+    /// recommended connection method for most use cases due to UDP's lower
+    /// overhead compared to TCP.
+    ///
+    /// For high-throughput scenarios with many targets, consider using
+    /// [`SharedUdpTransport`](crate::SharedUdpTransport) with [`build()`](Self::build).
+    ///
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid or the connection fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use async_snmp::{Auth, ClientBuilder};
+    ///
+    /// # async fn example() -> async_snmp::Result<()> {
+    /// let client = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .connect()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect(self) -> Result<Client<UdpTransport>, Error> {
         self.validate()?;
         let addr = self.resolve_target()?;
@@ -312,9 +445,30 @@ impl ClientBuilder {
 
     /// Connect via TCP.
     ///
+    /// Establishes a TCP connection to the target. Use this when:
+    /// - UDP is blocked by firewalls
+    /// - Messages exceed UDP's maximum datagram size
+    /// - Reliable delivery is required
+    ///
+    /// Note that TCP has higher overhead than UDP due to connection setup
+    /// and per-message framing.
+    ///
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid or the connection fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use async_snmp::{Auth, ClientBuilder};
+    ///
+    /// # async fn example() -> async_snmp::Result<()> {
+    /// let client = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .connect_tcp()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect_tcp(self) -> Result<Client<TcpTransport>, Error> {
         self.validate()?;
         let addr = self.resolve_target()?;
@@ -322,11 +476,35 @@ impl ClientBuilder {
         Ok(self.build_inner(transport))
     }
 
-    /// Build with custom transport.
+    /// Build a client with a custom transport.
+    ///
+    /// Use this method when you need:
+    /// - A shared UDP transport for high-throughput polling of many targets
+    /// - A custom transport implementation
+    /// - To reuse an existing transport
     ///
     /// # Errors
     ///
     /// Returns an error if the configuration is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use async_snmp::{Auth, ClientBuilder, SharedUdpTransport};
+    ///
+    /// # async fn example() -> async_snmp::Result<()> {
+    /// // Create a shared transport for polling many targets
+    /// let shared = SharedUdpTransport::bind("0.0.0.0:0").await?;
+    ///
+    /// // Create a handle for a specific target
+    /// let handle = shared.handle("192.168.1.1:161".parse().unwrap());
+    ///
+    /// // Build client with the shared transport handle
+    /// let client = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .build(handle)?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn build<T: Transport>(self, transport: T) -> Result<Client<T>, Error> {
         self.validate()?;
         Ok(self.build_inner(transport))

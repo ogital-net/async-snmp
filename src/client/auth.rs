@@ -60,6 +60,18 @@ impl Default for Auth {
 
 impl Auth {
     /// SNMPv1 community authentication.
+    ///
+    /// Creates authentication configuration for SNMPv1, which only supports
+    /// community string authentication without encryption.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::Auth;
+    ///
+    /// // Create SNMPv1 authentication with "private" community
+    /// let auth = Auth::v1("private");
+    /// ```
     pub fn v1(community: impl Into<String>) -> Self {
         Auth::Community {
             version: CommunityVersion::V1,
@@ -68,6 +80,22 @@ impl Auth {
     }
 
     /// SNMPv2c community authentication.
+    ///
+    /// Creates authentication configuration for SNMPv2c, which supports
+    /// community string authentication without encryption but adds GETBULK
+    /// and improved error handling over SNMPv1.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::Auth;
+    ///
+    /// // Create SNMPv2c authentication with "public" community
+    /// let auth = Auth::v2c("public");
+    ///
+    /// // Auth::default() is equivalent to Auth::v2c("public")
+    /// let auth = Auth::default();
+    /// ```
     pub fn v2c(community: impl Into<String>) -> Self {
         Auth::Community {
             version: CommunityVersion::V2c,
@@ -76,6 +104,32 @@ impl Auth {
     }
 
     /// Start building SNMPv3 USM authentication.
+    ///
+    /// Returns a builder that allows configuring authentication and privacy
+    /// protocols. SNMPv3 supports three security levels:
+    /// - noAuthNoPriv: username only (no security)
+    /// - authNoPriv: username with authentication (integrity)
+    /// - authPriv: username with authentication and encryption (confidentiality)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, AuthProtocol, PrivProtocol};
+    ///
+    /// // noAuthNoPriv: username only
+    /// let auth: Auth = Auth::usm("readonly").into();
+    ///
+    /// // authNoPriv: with authentication
+    /// let auth: Auth = Auth::usm("admin")
+    ///     .auth(AuthProtocol::Sha256, "authpassword")
+    ///     .into();
+    ///
+    /// // authPriv: with authentication and encryption
+    /// let auth: Auth = Auth::usm("admin")
+    ///     .auth(AuthProtocol::Sha256, "authpassword")
+    ///     .privacy(PrivProtocol::Aes128, "privpassword")
+    ///     .into();
+    /// ```
     pub fn usm(username: impl Into<String>) -> UsmBuilder {
         UsmBuilder::new(username)
     }
@@ -135,6 +189,14 @@ pub struct UsmBuilder {
 
 impl UsmBuilder {
     /// Create a new USM builder with the given username.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::Auth;
+    ///
+    /// let builder = Auth::usm("admin");
+    /// ```
     pub fn new(username: impl Into<String>) -> Self {
         Self {
             username: username.into(),
@@ -147,9 +209,28 @@ impl UsmBuilder {
 
     /// Add authentication (authNoPriv or authPriv).
     ///
-    /// This method performs the full key derivation (~850μs for SHA-256) when
+    /// This method performs the full key derivation (~850us for SHA-256) when
     /// the client connects. For high-throughput polling of many engines,
     /// consider using [`with_master_keys`](Self::with_master_keys) instead.
+    ///
+    /// # Supported Protocols
+    ///
+    /// - `AuthProtocol::Md5` - MD5 (legacy, not recommended)
+    /// - `AuthProtocol::Sha1` - SHA-1 (legacy)
+    /// - `AuthProtocol::Sha224` - SHA-224
+    /// - `AuthProtocol::Sha256` - SHA-256 (recommended)
+    /// - `AuthProtocol::Sha384` - SHA-384
+    /// - `AuthProtocol::Sha512` - SHA-512
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, AuthProtocol};
+    ///
+    /// let auth: Auth = Auth::usm("admin")
+    ///     .auth(AuthProtocol::Sha256, "mypassword")
+    ///     .into();
+    /// ```
     pub fn auth(mut self, protocol: AuthProtocol, password: impl Into<String>) -> Self {
         self.auth = Some((protocol, password.into()));
         self
@@ -157,7 +238,25 @@ impl UsmBuilder {
 
     /// Add privacy/encryption (authPriv).
     ///
-    /// Requires auth; validated at connection time.
+    /// Privacy requires authentication; this is validated at connection time.
+    ///
+    /// # Supported Protocols
+    ///
+    /// - `PrivProtocol::Des` - DES (legacy, not recommended)
+    /// - `PrivProtocol::Aes128` - AES-128 (recommended)
+    /// - `PrivProtocol::Aes192` - AES-192
+    /// - `PrivProtocol::Aes256` - AES-256
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, AuthProtocol, PrivProtocol};
+    ///
+    /// let auth: Auth = Auth::usm("admin")
+    ///     .auth(AuthProtocol::Sha256, "authpassword")
+    ///     .privacy(PrivProtocol::Aes128, "privpassword")
+    ///     .into();
+    /// ```
     pub fn privacy(mut self, protocol: PrivProtocol, password: impl Into<String>) -> Self {
         self.privacy = Some((protocol, password.into()));
         self
@@ -193,7 +292,20 @@ impl UsmBuilder {
     }
 
     /// Set the SNMPv3 context name for VACM context selection.
+    ///
+    /// The context name allows selecting different MIB views on the same agent.
     /// Most deployments use empty string (default).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use async_snmp::{Auth, AuthProtocol};
+    ///
+    /// let auth: Auth = Auth::usm("admin")
+    ///     .auth(AuthProtocol::Sha256, "password")
+    ///     .context_name("vlan100")
+    ///     .into();
+    /// ```
     pub fn context_name(mut self, name: impl Into<String>) -> Self {
         self.context_name = Some(name.into());
         self
