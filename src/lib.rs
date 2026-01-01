@@ -171,13 +171,14 @@
 //! The library uses the `tracing` crate for structured logging. All SNMP
 //! operations emit spans and events with relevant context.
 //!
+//! ### Basic Setup
+//!
 //! ```rust,no_run
 //! use async_snmp::{Auth, Client, oid};
-//! use tracing_subscriber::{fmt, EnvFilter};
+//! use tracing_subscriber::EnvFilter;
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     // Initialize tracing subscriber
 //!     tracing_subscriber::fmt()
 //!         .with_env_filter(
 //!             EnvFilter::from_default_env()
@@ -185,22 +186,60 @@
 //!         )
 //!         .init();
 //!
-//!     // Operations now emit structured logs
 //!     let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
 //!         .connect()
 //!         .await
 //!         .expect("failed to connect");
 //!
-//!     // This will log: DEBUG async_snmp::client: snmp.target=192.168.1.1:161 snmp.oid=1.3.6.1.2.1.1.1.0
+//!     // Logs: DEBUG async_snmp::client snmp.target=192.168.1.1:161 snmp.request_id=12345
 //!     let _ = client.get(&oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)).await;
 //! }
 //! ```
 //!
-//! Key tracing fields include:
-//! - `snmp.target` - The target address for client operations
-//! - `snmp.oid` - The OID being requested
-//! - `snmp.source` - The source address for agent/receiver operations
-//! - `snmp.security_model` - SNMPv3 security model in use
+//! ### Log Levels
+//!
+//! | Level | What's Logged |
+//! |-------|---------------|
+//! | ERROR | Socket errors, fatal transport failures |
+//! | WARN | Auth failures, parse errors, source address mismatches |
+//! | INFO | Connect/disconnect, walk completion |
+//! | DEBUG | Request/response flow, engine discovery, retries |
+//! | TRACE | Auth verification, raw packet data |
+//!
+//! ### Structured Fields
+//!
+//! All fields use the `snmp.` prefix for easy filtering:
+//!
+//! | Field | Description |
+//! |-------|-------------|
+//! | `snmp.target` | Target address for outgoing requests |
+//! | `snmp.source` | Source address of incoming messages |
+//! | `snmp.request_id` | SNMP request identifier |
+//! | `snmp.retries` | Current retry attempt number |
+//! | `snmp.elapsed_ms` | Request duration in milliseconds |
+//! | `snmp.pdu_type` | PDU type (Get, GetNext, etc.) |
+//! | `snmp.varbind_count` | Number of varbinds in request/response |
+//! | `snmp.error_status` | SNMP error status from response |
+//! | `snmp.error_index` | Index of problematic varbind |
+//! | `snmp.non_repeaters` | GETBULK non-repeaters parameter |
+//! | `snmp.max_repetitions` | GETBULK max-repetitions parameter |
+//! | `snmp.username` | SNMPv3 USM username |
+//! | `snmp.security_level` | SNMPv3 security level |
+//! | `snmp.engine_id` | SNMPv3 engine identifier (hex) |
+//! | `snmp.local_addr` | Local bind address |
+//!
+//! ### Filtering Examples
+//!
+//! ```bash
+//! # See all async-snmp logs at debug level
+//! RUST_LOG=async_snmp=debug cargo run
+//!
+//! # Only see retries and errors
+//! RUST_LOG=async_snmp=warn cargo run
+//!
+//! # Trace a specific module
+//! RUST_LOG=async_snmp::client=trace cargo run
+//! ```
 
 pub mod agent;
 pub mod ber;
