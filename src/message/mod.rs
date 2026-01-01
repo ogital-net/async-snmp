@@ -88,23 +88,23 @@ impl Message {
     ///
     /// Automatically detects the SNMP version and parses accordingly.
     pub fn decode(data: Bytes) -> Result<Self> {
-        let mut decoder = Decoder::new(data.clone());
-
-        // Peek at version to determine message type
+        let mut decoder = Decoder::new(data);
         let mut seq = decoder.read_sequence()?;
+
+        // Read version to determine message type
         let version_num = seq.read_integer()?;
         let version = Version::from_i32(version_num).ok_or_else(|| {
             Error::decode(seq.offset(), DecodeErrorKind::UnknownVersion(version_num))
         })?;
 
-        // Re-decode from start with appropriate handler
+        // Decode remainder using version-specific handler
         match version {
             Version::V1 | Version::V2c => {
-                let msg = CommunityMessage::decode(data)?;
+                let msg = CommunityMessage::decode_from_sequence(&mut seq, version)?;
                 Ok(Message::Community(msg))
             }
             Version::V3 => {
-                let msg = V3Message::decode(data)?;
+                let msg = V3Message::decode_from_sequence(&mut seq)?;
                 Ok(Message::V3(msg))
             }
         }

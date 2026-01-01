@@ -420,8 +420,13 @@ impl V3Message {
             ));
         }
 
+        Self::decode_from_sequence(&mut seq)
+    }
+
+    /// Decode from a sequence decoder where version has already been read.
+    pub(crate) fn decode_from_sequence(seq: &mut Decoder) -> Result<Self> {
         // msgGlobalData
-        let global_data = MsgGlobalData::decode(&mut seq)?;
+        let global_data = MsgGlobalData::decode(seq)?;
 
         // msgSecurityParameters (OCTET STRING containing USM params)
         let security_params = seq.read_octet_string()?;
@@ -433,7 +438,7 @@ impl V3Message {
             V3MessageData::Encrypted(encrypted)
         } else {
             // Plaintext: expect SEQUENCE (ScopedPDU)
-            let scoped_pdu = ScopedPdu::decode(&mut seq)?;
+            let scoped_pdu = ScopedPdu::decode(seq)?;
             V3MessageData::Plaintext(scoped_pdu)
         };
 

@@ -156,7 +156,6 @@ impl Agent {
 
         // Decode USM parameters
         let usm_params = UsmSecurityParams::decode(msg.security_params.clone())?;
-        let username = usm_params.username.clone();
 
         // Check if this is a discovery request (empty engine ID)
         if usm_params.engine_id.is_empty() {
@@ -175,7 +174,7 @@ impl Agent {
         }
 
         // Look up user credentials
-        let user_config = self.inner.usm_users.get(&username);
+        let user_config = self.inner.usm_users.get(&usm_params.username);
         let derived_keys = user_config.map(|u| u.derive_keys(&self.inner.engine_id));
 
         // Verify authentication if required
@@ -215,7 +214,7 @@ impl Agent {
                 _ => {
                     tracing::debug!(
                         snmp.source = %source,
-                        snmp.username = %String::from_utf8_lossy(&username),
+                        snmp.username = %String::from_utf8_lossy(&usm_params.username),
                         "unknown user or no credentials"
                     );
                     return self.send_v3_report(
@@ -275,7 +274,7 @@ impl Agent {
             source,
             version: Version::V3,
             security_model: SecurityModel::Usm,
-            security_name: username.clone(),
+            security_name: usm_params.username.clone(),
             security_level,
             context_name: scoped_pdu.context_name.clone(),
             request_id: pdu.request_id,

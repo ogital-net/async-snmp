@@ -83,6 +83,11 @@ impl CommunityMessage {
             Error::decode(seq.offset(), DecodeErrorKind::UnknownVersion(version_num))
         })?;
 
+        Self::decode_from_sequence(&mut seq, version)
+    }
+
+    /// Decode from a sequence decoder where version has already been read.
+    pub(crate) fn decode_from_sequence(seq: &mut Decoder, version: Version) -> Result<Self> {
         if version == Version::V3 {
             return Err(Error::decode(
                 seq.offset(),
@@ -91,7 +96,7 @@ impl CommunityMessage {
         }
 
         let community = seq.read_octet_string()?;
-        let pdu = Pdu::decode(&mut seq)?;
+        let pdu = Pdu::decode(seq)?;
 
         Ok(CommunityMessage {
             version,
