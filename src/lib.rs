@@ -255,6 +255,11 @@
 //! | Walk never terminates | Set [`ClientBuilder::max_walk_results`] |
 //! | Slow responses cause timeouts | Reduce [`ClientBuilder::max_repetitions`] |
 //!
+//! **Warning**: [`OidOrdering::AllowNonIncreasing`] uses O(n) memory to track
+//! seen OIDs for cycle detection. Always pair it with [`ClientBuilder::max_walk_results`]
+//! to bound memory usage. The cycle detection catches duplicate OIDs, but a
+//! pathological agent could still return an infinite sequence of unique OIDs.
+//!
 //! ```rust,no_run
 //! use async_snmp::{Auth, Client, WalkMode, OidOrdering};
 //!
@@ -263,7 +268,7 @@
 //! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
 //!     .walk_mode(WalkMode::GetNext)           // Avoid buggy GETBULK
 //!     .oid_ordering(OidOrdering::AllowNonIncreasing)  // Handle out-of-order OIDs
-//!     .max_walk_results(10_000)               // Prevent runaway walks
+//!     .max_walk_results(10_000)               // IMPORTANT: bound memory usage
 //!     .max_repetitions(10)                    // Smaller responses
 //!     .connect()
 //!     .await?;

@@ -219,14 +219,18 @@ impl ClientBuilder {
     ///
     /// Use `AllowNonIncreasing` for buggy agents that return OIDs out of order.
     ///
+    /// **Warning**: `AllowNonIncreasing` uses O(n) memory. Always pair with
+    /// [`max_walk_results`](Self::max_walk_results) to bound memory usage.
+    ///
     /// # Example
     ///
     /// ```rust
     /// use async_snmp::{Auth, ClientBuilder, OidOrdering};
     ///
-    /// // Use relaxed ordering for devices that return OIDs out of order
+    /// // Use relaxed ordering with a safety limit
     /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
-    ///     .oid_ordering(OidOrdering::AllowNonIncreasing);
+    ///     .oid_ordering(OidOrdering::AllowNonIncreasing)
+    ///     .max_walk_results(10_000);
     /// ```
     pub fn oid_ordering(mut self, ordering: OidOrdering) -> Self {
         self.oid_ordering = ordering;

@@ -42,10 +42,18 @@ pub enum OidOrdering {
     Strict,
 
     /// Allow non-increasing OIDs, with cycle detection.
-    /// Some buggy agents return OIDs out of order.
-    /// Walk tracks all seen OIDs in a HashSet to detect cycles.
-    /// Terminates with error if same OID returned twice.
-    /// Memory: O(n) where n = number of walk results.
+    ///
+    /// Some buggy agents return OIDs out of order. This mode tracks all seen
+    /// OIDs in a HashSet to detect cycles, terminating with an error if the
+    /// same OID is returned twice.
+    ///
+    /// **Warning**: This uses O(n) memory where n = number of walk results.
+    /// Always pair with [`ClientBuilder::max_walk_results`] to bound memory
+    /// usage. Cycle detection only catches duplicate OIDs; a pathological
+    /// agent could still return an infinite sequence of unique OIDs within
+    /// the subtree.
+    ///
+    /// [`ClientBuilder::max_walk_results`]: crate::ClientBuilder::max_walk_results
     AllowNonIncreasing,
 }
 
