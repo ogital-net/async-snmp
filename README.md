@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/async-snmp.svg)](https://crates.io/crates/async-snmp)
 [![Documentation](https://docs.rs/async-snmp/badge.svg)](https://docs.rs/async-snmp)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/)
-[![License](https://img.shields.io/crates/l/async-snmp.svg)](LICENSE-MIT)
+[![License](https://img.shields.io/crates/l/async-snmp.svg)](#license)
 
 Modern, async-first SNMP client library for Rust.
 
