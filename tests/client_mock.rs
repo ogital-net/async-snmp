@@ -8,7 +8,7 @@
 mod common;
 
 use async_snmp::{
-    Client, ClientConfig, Error, ErrorStatus, OidOrdering, Value, Version, WalkMode, oid,
+    Client, ClientConfig, Error, ErrorStatus, OidOrdering, Retry, Value, Version, WalkMode, oid,
     transport::{MockTransport, ResponseBuilder},
 };
 use bytes::Bytes;
@@ -23,7 +23,7 @@ fn create_mock_client(mock: MockTransport) -> Client<MockTransport> {
         version: Version::V2c,
         community: Bytes::from_static(b"public"),
         timeout: Duration::from_secs(1),
-        retries: 0,
+        retry: Retry::none(),
         max_oids_per_request: 10,
         v3_security: None,
         walk_mode: WalkMode::Auto,
@@ -39,7 +39,7 @@ fn create_mock_client_v1(mock: MockTransport) -> Client<MockTransport> {
         version: Version::V1,
         community: Bytes::from_static(b"public"),
         timeout: Duration::from_secs(1),
-        retries: 0,
+        retry: Retry::none(),
         max_oids_per_request: 10,
         v3_security: None,
         walk_mode: WalkMode::Auto,
@@ -346,7 +346,7 @@ async fn test_get_many_batching() {
         version: Version::V2c,
         community: Bytes::from_static(b"public"),
         timeout: Duration::from_secs(1),
-        retries: 0,
+        retry: Retry::none(),
         max_oids_per_request: 2,
         v3_security: None,
         walk_mode: WalkMode::Auto,
@@ -633,7 +633,7 @@ async fn test_retry_on_timeout_success_on_retry() {
         version: Version::V2c,
         community: Bytes::from_static(b"public"),
         timeout: Duration::from_secs(1),
-        retries: 1,
+        retry: Retry::fixed(1, Duration::ZERO),
         max_oids_per_request: 10,
         v3_security: None,
         walk_mode: WalkMode::Auto,
@@ -664,7 +664,7 @@ async fn test_retry_exhaustion() {
         version: Version::V2c,
         community: Bytes::from_static(b"public"),
         timeout: Duration::from_millis(10),
-        retries: 2,
+        retry: Retry::fixed(2, Duration::ZERO),
         max_oids_per_request: 10,
         v3_security: None,
         walk_mode: WalkMode::Auto,
@@ -1724,7 +1724,7 @@ async fn test_v1_retry_on_timeout() {
         version: Version::V1,
         community: Bytes::from_static(b"public"),
         timeout: Duration::from_secs(1),
-        retries: 1,
+        retry: Retry::fixed(1, Duration::ZERO),
         max_oids_per_request: 10,
         v3_security: None,
         walk_mode: WalkMode::Auto,

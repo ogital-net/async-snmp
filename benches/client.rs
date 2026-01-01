@@ -14,7 +14,7 @@
 //! Run with:
 //!   cargo bench --bench client
 
-use async_snmp::{Auth, Client, oid};
+use async_snmp::{Auth, Client, Retry, oid};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
@@ -28,7 +28,7 @@ fn is_container_available(rt: &Runtime) -> bool {
     rt.block_on(async {
         match Client::builder(TARGET, Auth::v2c(COMMUNITY))
             .timeout(Duration::from_millis(500))
-            .retries(0)
+            .retry(Retry::none())
             .connect()
             .await
         {
@@ -56,7 +56,7 @@ fn bench_get_single(c: &mut Criterion) {
     let client = rt.block_on(async {
         Client::builder(TARGET, Auth::v2c(COMMUNITY))
             .timeout(Duration::from_secs(5))
-            .retries(1)
+            .retry(Retry::fixed(1, Duration::ZERO))
             .connect()
             .await
             .expect("Failed to connect to test container")

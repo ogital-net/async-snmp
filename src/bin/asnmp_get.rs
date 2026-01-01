@@ -148,7 +148,7 @@ async fn run_get(
 
     let client = Client::builder(target.to_string(), auth)
         .timeout(args.common.timeout_duration())
-        .retries(args.common.retries)
+        .retry(args.common.retry_config())
         .connect()
         .await?;
 

@@ -64,13 +64,13 @@
 //! See the [`error`] module for complete documentation.
 //!
 //! ```rust,no_run
-//! use async_snmp::{Auth, Client, Error, ErrorStatus, oid};
+//! use async_snmp::{Auth, Client, Error, ErrorStatus, Retry, oid};
 //! use std::time::Duration;
 //!
 //! async fn poll_device(addr: &str) -> Result<String, String> {
 //!     let client = Client::builder(addr, Auth::v2c("public"))
 //!         .timeout(Duration::from_secs(5))
-//!         .retries(2)
+//!         .retry(Retry::fixed(2, Duration::ZERO))
 //!         .connect()
 //!         .await
 //!         .map_err(|e| format!("Failed to connect: {}", e))?;
@@ -86,6 +86,36 @@
 //!         Err(e) => Err(format!("SNMP error: {}", e)),
 //!     }
 //! }
+//! ```
+//!
+//! ## Retry Configuration
+//!
+//! UDP transports retry on timeout with configurable backoff strategies.
+//! TCP transports ignore retry configuration (the transport layer handles reliability).
+//!
+//! ```rust
+//! use async_snmp::{Auth, Client, Retry};
+//! use std::time::Duration;
+//!
+//! # async fn example() -> async_snmp::Result<()> {
+//! // No retries (fail immediately on timeout)
+//! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
+//!     .retry(Retry::none())
+//!     .connect().await?;
+//!
+//! // 3 retries with no delay (default behavior)
+//! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
+//!     .retry(Retry::fixed(3, Duration::ZERO))
+//!     .connect().await?;
+//!
+//! // Exponential backoff with jitter (1s, 2s, 4s, 5s, 5s)
+//! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
+//!     .retry(Retry::exponential(5)
+//!         .max_delay(Duration::from_secs(5))
+//!         .jitter(0.25))  // ±25% randomization
+//!     .connect().await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Concurrent Operations
@@ -362,8 +392,8 @@ pub mod cli;
 // Re-exports for convenience
 pub use agent::{Agent, AgentBuilder, VacmBuilder, VacmConfig, View};
 pub use client::{
-    Auth, BulkWalk, Client, ClientBuilder, ClientConfig, CommunityVersion, OidOrdering, UsmAuth,
-    UsmBuilder, V3SecurityConfig, Walk, WalkMode, WalkStream,
+    Auth, Backoff, BulkWalk, Client, ClientBuilder, ClientConfig, CommunityVersion, OidOrdering,
+    Retry, RetryBuilder, UsmAuth, UsmBuilder, V3SecurityConfig, Walk, WalkMode, WalkStream,
 };
 pub use error::{
     AuthErrorKind, CryptoErrorKind, DecodeErrorKind, EncodeErrorKind, Error, ErrorStatus,

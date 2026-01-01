@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use async_snmp::{Auth, Client, SharedUdpTransport, oid};
+use async_snmp::{Auth, Client, Retry, SharedUdpTransport, oid};
 use futures::future::join_all;
 use hdrhistogram::Histogram;
 use testcontainers::core::{IntoContainerPort, WaitFor};
@@ -175,7 +175,7 @@ async fn benchmark_non_shared(
     for target in targets {
         let client = Client::builder(target.to_string(), Auth::v2c(COMMUNITY))
             .timeout(Duration::from_secs(5))
-            .retries(1)
+            .retry(Retry::fixed(1, Duration::ZERO))
             .connect()
             .await
             .expect("Failed to connect");
@@ -213,7 +213,7 @@ async fn benchmark_shared(
         let handle = shared.handle(*target);
         let client = Client::builder(target.to_string(), Auth::v2c(COMMUNITY))
             .timeout(Duration::from_secs(5))
-            .retries(1)
+            .retry(Retry::fixed(1, Duration::ZERO))
             .build(handle)
             .expect("Failed to build client");
         clients.push(client);

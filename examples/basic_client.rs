@@ -15,7 +15,7 @@
 //! Or use the testcontainers snmpd image:
 //!   docker run -p 11161:161/udp testainers/snmpd-container
 
-use async_snmp::{Auth, Client, Error, ErrorStatus, Value, oid};
+use async_snmp::{Auth, Client, Error, ErrorStatus, Retry, Value, oid};
 use std::time::Duration;
 
 #[tokio::main]
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The builder pattern allows configuring timeout, retries, etc.
     let client = Client::builder(target, Auth::v2c("public"))
         .timeout(Duration::from_secs(5))
-        .retries(3)
+        .retry(Retry::fixed(3, Duration::ZERO))
         .connect()
         .await?;
 

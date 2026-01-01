@@ -23,7 +23,7 @@ use std::net::SocketAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_snmp::{Auth, Client, SharedUdpTransport, Transport, Value, oid};
+use async_snmp::{Auth, Client, Retry, SharedUdpTransport, Transport, Value, oid};
 use common::{AUTH_PASSWORD, COMMUNITY_RW, PRIV_PASSWORD, parse_image, snmpd_image, users};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
@@ -215,7 +215,7 @@ async fn create_v2c_client() -> Client {
 
     Client::builder(&target, Auth::v2c("public"))
         .timeout(Duration::from_secs(5))
-        .retries(2)
+        .retry(Retry::fixed(2, Duration::ZERO))
         .connect()
         .await
         .expect("Failed to connect to SNMP agent")
@@ -417,7 +417,7 @@ async fn test_get_many_batching() {
     // Create client with small max_oids_per_request to force batching
     let client = Client::builder(&target, Auth::v2c("public"))
         .timeout(Duration::from_secs(5))
-        .retries(1)
+        .retry(Retry::fixed(1, Duration::ZERO))
         .max_oids_per_request(2) // Force batching at 2 OIDs
         .connect()
         .await
@@ -484,7 +484,7 @@ async fn test_shared_transport_single_client() {
 
     let client = Client::builder(target.to_string(), Auth::v2c("public"))
         .timeout(Duration::from_secs(5))
-        .retries(1)
+        .retry(Retry::fixed(1, Duration::ZERO))
         .build(shared.handle(target))
         .expect("Failed to build client");
 
@@ -836,7 +836,7 @@ async fn create_v3_client() -> Client {
             .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 authPriv AES")
@@ -919,7 +919,7 @@ async fn test_v3_shared_engine_cache() {
     )
     .engine_cache(cache.clone())
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect client 1");
@@ -937,7 +937,7 @@ async fn test_v3_shared_engine_cache() {
     )
     .engine_cache(cache.clone())
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect client 2");
@@ -971,7 +971,7 @@ async fn test_v3_wrong_auth_password() {
             .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(3))
-    .retries(0) // Don't retry on auth failure
+    .retry(Retry::none()) // Don't retry on auth failure
     .connect()
     .await;
 
@@ -1024,7 +1024,7 @@ async fn test_v3_wrong_priv_password() {
             .privacy(PrivProtocol::Aes128, "wrongprivpass99"),
     )
     .timeout(Duration::from_secs(3))
-    .retries(0)
+    .retry(Retry::none())
     .connect()
     .await;
 
@@ -1074,7 +1074,7 @@ async fn test_v3_unknown_user() {
             .privacy(PrivProtocol::Aes128, "somepassword123"),
     )
     .timeout(Duration::from_secs(3))
-    .retries(0)
+    .retry(Retry::none())
     .connect()
     .await;
 
@@ -1115,7 +1115,7 @@ async fn test_v3_wrong_auth_protocol() {
             .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(3))
-    .retries(0)
+    .retry(Retry::none())
     .connect()
     .await;
 
@@ -1151,7 +1151,7 @@ async fn create_set_client() -> Client {
         Auth::v2c(std::str::from_utf8(COMMUNITY_RW).unwrap()),
     )
     .timeout(Duration::from_secs(5))
-    .retries(2)
+    .retry(Retry::fixed(2, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect to SNMP agent for SET tests")
@@ -1432,7 +1432,7 @@ async fn test_v3_noauthnopriv_get() {
     // noAuthNoPriv user - no authentication or privacy
     let client = Client::builder(&target, Auth::usm(users::NOAUTH_USER))
         .timeout(Duration::from_secs(5))
-        .retries(1)
+        .retry(Retry::fixed(1, Duration::ZERO))
         .connect()
         .await
         .expect("Failed to connect V3 noAuthNoPriv");
@@ -1457,7 +1457,7 @@ async fn test_v3_noauthnopriv_walk() {
 
     let client = Client::builder(&target, Auth::usm(users::NOAUTH_USER))
         .timeout(Duration::from_secs(5))
-        .retries(1)
+        .retry(Retry::fixed(1, Duration::ZERO))
         .connect()
         .await
         .expect("Failed to connect V3 noAuthNoPriv");
@@ -1493,7 +1493,7 @@ async fn test_v3_auth_sha224() {
         Auth::usm(users::AUTHSHA224_USER).auth(AuthProtocol::Sha224, AUTH_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 SHA-224");
@@ -1521,7 +1521,7 @@ async fn test_v3_auth_sha256() {
         Auth::usm(users::AUTHSHA256_USER).auth(AuthProtocol::Sha256, AUTH_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 SHA-256");
@@ -1549,7 +1549,7 @@ async fn test_v3_auth_sha384() {
         Auth::usm(users::AUTHSHA384_USER).auth(AuthProtocol::Sha384, AUTH_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 SHA-384");
@@ -1577,7 +1577,7 @@ async fn test_v3_auth_sha512() {
         Auth::usm(users::AUTHSHA512_USER).auth(AuthProtocol::Sha512, AUTH_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 SHA-512");
@@ -1605,7 +1605,7 @@ async fn test_v3_auth_md5() {
         Auth::usm(users::AUTHMD5_USER).auth(AuthProtocol::Md5, AUTH_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 MD5");
@@ -1640,7 +1640,7 @@ async fn test_v3_priv_aes192() {
             .privacy(PrivProtocol::Aes192, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 AES-192");
@@ -1671,7 +1671,7 @@ async fn test_v3_priv_aes256() {
             .privacy(PrivProtocol::Aes256, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 AES-256");
@@ -1702,7 +1702,7 @@ async fn test_v3_priv_des() {
             .privacy(PrivProtocol::Des, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 DES");
@@ -1732,7 +1732,7 @@ async fn test_v3_priv_aes192_walk() {
             .privacy(PrivProtocol::Aes192, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 AES-192");
@@ -1766,7 +1766,7 @@ async fn test_v3_priv_aes256_walk() {
             .privacy(PrivProtocol::Aes256, PRIV_PASSWORD),
     )
     .timeout(Duration::from_secs(5))
-    .retries(1)
+    .retry(Retry::fixed(1, Duration::ZERO))
     .connect()
     .await
     .expect("Failed to connect V3 AES-256");
@@ -1941,7 +1941,7 @@ async fn test_shared_transport_v3_concurrent() {
                     .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
             )
             .timeout(Duration::from_secs(10))
-            .retries(1)
+            .retry(Retry::fixed(1, Duration::ZERO))
             .build(shared.handle(target))
             .expect("Failed to build client")
         })
@@ -2022,7 +2022,7 @@ async fn test_shared_transport_v3_concurrent_different_oids() {
                     .privacy(PrivProtocol::Aes128, PRIV_PASSWORD),
             )
             .timeout(Duration::from_secs(10))
-            .retries(1)
+            .retry(Retry::fixed(1, Duration::ZERO))
             .build(shared.handle(target))
             .expect("Failed to build client")
         })

@@ -85,13 +85,13 @@
 //! Timeouts include retry information to help diagnose connectivity issues:
 //!
 //! ```no_run
-//! use async_snmp::{Auth, Client, Error, oid};
+//! use async_snmp::{Auth, Client, Error, Retry, oid};
 //! use std::time::Duration;
 //!
 //! # async fn example() {
 //! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
 //!     .timeout(Duration::from_secs(2))
-//!     .retries(3)
+//!     .retry(Retry::fixed(3, Duration::ZERO))
 //!     .connect()
 //!     .await
 //!     .expect("failed to create client");

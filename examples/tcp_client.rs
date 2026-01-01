@@ -18,7 +18,7 @@
 //!   docker build -t async-snmp-test:latest tests/containers/snmpd/
 //!   docker run -d -p 11161:161/udp -p 11161:161/tcp async-snmp-test:latest
 
-use async_snmp::{Auth, AuthProtocol, Client, PrivProtocol, TcpTransport, Transport, oid};
+use async_snmp::{Auth, AuthProtocol, Client, PrivProtocol, Retry, TcpTransport, Transport, oid};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder(target, Auth::v2c("public"))
         .timeout(Duration::from_secs(10))
         // Note: retries are ignored for TCP (is_stream = true)
-        .retries(3)
+        .retry(Retry::fixed(3, Duration::ZERO))
         .connect_tcp()
         .await?;
 
@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // UDP client - retries on timeout
     let udp_client = Client::builder(target, Auth::v2c("public"))
         .timeout(Duration::from_secs(2))
-        .retries(3) // Will retry up to 3 times on timeout
+        .retry(Retry::fixed(3, Duration::ZERO)) // Will retry up to 3 times on timeout
         .connect()
         .await;
 
@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TCP client - no retries
     let tcp_client = Client::builder(target, Auth::v2c("public"))
         .timeout(Duration::from_secs(2))
-        .retries(3) // Ignored for TCP!
+        .retry(Retry::fixed(3, Duration::ZERO)) // Ignored for TCP!
         .connect_tcp()
         .await;
 

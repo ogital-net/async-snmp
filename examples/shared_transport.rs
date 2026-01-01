@@ -18,7 +18,7 @@
 //!   docker run -d -p 11161:161/udp async-snmp-test:latest
 
 use async_snmp::{
-    Auth, AuthProtocol, Client, ClientConfig, EngineCache, MasterKeys, PrivProtocol,
+    Auth, AuthProtocol, Client, ClientConfig, EngineCache, MasterKeys, PrivProtocol, Retry,
     SharedUdpTransport, oid,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = ClientConfig {
         timeout: Duration::from_secs(5),
-        retries: 2,
+        retry: Retry::fixed(2, Duration::ZERO),
         ..Default::default()
     };
 
@@ -151,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let client = Client::builder(container_target.to_string(), auth)
             .timeout(Duration::from_secs(5))
-            .retries(2)
+            .retry(Retry::fixed(2, Duration::ZERO))
             .engine_cache(engine_cache.clone())
             .build(handle)?;
 
@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = ClientConfig {
         timeout: Duration::from_millis(500),
-        retries: 0,
+        retry: Retry::none(),
         ..Default::default()
     };
 

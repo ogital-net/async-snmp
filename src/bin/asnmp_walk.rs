@@ -166,7 +166,7 @@ async fn run_walk(
 
     let client = Client::builder(target.to_string(), auth)
         .timeout(args.common.timeout_duration())
-        .retries(args.common.retries)
+        .retry(args.common.retry_config())
         .walk_mode(walk_mode)
         .max_repetitions(args.walk.max_repetitions)
         .connect()

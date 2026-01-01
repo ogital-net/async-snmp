@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
+use crate::client::retry::Retry;
 use crate::client::walk::{OidOrdering, WalkMode};
 use crate::client::{Auth, ClientConfig, CommunityVersion, V3SecurityConfig};
 use crate::error::Error;
@@ -27,7 +28,7 @@ use super::Client;
 /// # Example
 ///
 /// ```rust,no_run
-/// use async_snmp::{Auth, ClientBuilder};
+/// use async_snmp::{Auth, ClientBuilder, Retry};
 /// use std::time::Duration;
 ///
 /// # async fn example() -> async_snmp::Result<()> {
@@ -39,7 +40,7 @@ use super::Client;
 /// let client = ClientBuilder::new("192.168.1.1:161",
 ///     Auth::usm("admin").auth(async_snmp::AuthProtocol::Sha256, "password"))
 ///     .timeout(Duration::from_secs(10))
-///     .retries(5)
+///     .retry(Retry::fixed(5, Duration::ZERO))
 ///     .connect().await?;
 /// # Ok(())
 /// # }
@@ -48,7 +49,7 @@ pub struct ClientBuilder {
     target: String,
     auth: Auth,
     timeout: Duration,
-    retries: u32,
+    retry: Retry,
     max_oids_per_request: usize,
     max_repetitions: u32,
     walk_mode: WalkMode,
@@ -87,7 +88,7 @@ impl ClientBuilder {
             target: target.into(),
             auth: auth.into(),
             timeout: Duration::from_secs(5),
-            retries: 3,
+            retry: Retry::default(),
             max_oids_per_request: 10,
             max_repetitions: 25,
             walk_mode: WalkMode::Auto,
@@ -117,32 +118,38 @@ impl ClientBuilder {
         self
     }
 
-    /// Set the number of retries for UDP transports (default: 3).
+    /// Set the retry configuration (default: 3 retries, no backoff).
     ///
-    /// On timeout, the client immediately resends the request up to this many
-    /// times before returning an error. Retries are disabled for TCP (which
-    /// handles reliability at the transport layer).
-    ///
-    /// **Note:** There is no exponential backoff between retries. Each attempt
-    /// uses the full timeout, so worst-case latency is `timeout × (retries + 1)`.
-    /// For overwhelmed agents, consider reducing retries or increasing timeout
-    /// rather than adding more retries.
+    /// On timeout, the client resends the request up to this many times before
+    /// returning an error. Retries are disabled for TCP (which handles
+    /// reliability at the transport layer).
     ///
     /// # Example
     ///
     /// ```rust
-    /// use async_snmp::{Auth, ClientBuilder};
+    /// use async_snmp::{Auth, ClientBuilder, Retry};
+    /// use std::time::Duration;
     ///
-    /// // More retries for lossy networks (but beware of total latency)
+    /// // No retries
     /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
-    ///     .retries(5);
+    ///     .retry(Retry::none());
     ///
-    /// // Disable retries for fast failure detection
+    /// // 5 retries with no delay (immediate retry on timeout)
     /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
-    ///     .retries(0);
+    ///     .retry(Retry::fixed(5, Duration::ZERO));
+    ///
+    /// // Fixed delay between retries
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .retry(Retry::fixed(3, Duration::from_millis(200)));
+    ///
+    /// // Exponential backoff with jitter
+    /// let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .retry(Retry::exponential(5)
+    ///         .max_delay(Duration::from_secs(5))
+    ///         .jitter(0.25));
     /// ```
-    pub fn retries(mut self, retries: u32) -> Self {
-        self.retries = retries;
+    pub fn retry(mut self, retry: impl Into<Retry>) -> Self {
+        self.retry = retry.into();
         self
     }
 
@@ -379,7 +386,7 @@ impl ClientBuilder {
                     version: snmp_version,
                     community: Bytes::copy_from_slice(community.as_bytes()),
                     timeout: self.timeout,
-                    retries: self.retries,
+                    retry: self.retry.clone(),
                     max_oids_per_request: self.max_oids_per_request,
                     v3_security: None,
                     walk_mode: self.walk_mode,
@@ -413,7 +420,7 @@ impl ClientBuilder {
                     version: Version::V3,
                     community: Bytes::new(),
                     timeout: self.timeout,
-                    retries: self.retries,
+                    retry: self.retry.clone(),
                     max_oids_per_request: self.max_oids_per_request,
                     v3_security: Some(security),
                     walk_mode: self.walk_mode,
@@ -546,7 +553,7 @@ mod tests {
         let builder = ClientBuilder::new("192.168.1.1:161", Auth::default());
         assert_eq!(builder.target, "192.168.1.1:161");
         assert_eq!(builder.timeout, Duration::from_secs(5));
-        assert_eq!(builder.retries, 3);
+        assert_eq!(builder.retry.max_attempts, 3);
         assert_eq!(builder.max_oids_per_request, 10);
         assert_eq!(builder.max_repetitions, 25);
         assert_eq!(builder.walk_mode, WalkMode::Auto);
@@ -561,7 +568,7 @@ mod tests {
         let cache = Arc::new(EngineCache::new());
         let builder = ClientBuilder::new("192.168.1.1:161", Auth::v2c("private"))
             .timeout(Duration::from_secs(10))
-            .retries(5)
+            .retry(Retry::fixed(5, Duration::ZERO))
             .max_oids_per_request(20)
             .max_repetitions(50)
             .walk_mode(WalkMode::GetNext)
@@ -571,7 +578,7 @@ mod tests {
             .context_engine_id(vec![0x80, 0x00, 0x01]);
 
         assert_eq!(builder.timeout, Duration::from_secs(10));
-        assert_eq!(builder.retries, 5);
+        assert_eq!(builder.retry.max_attempts, 5);
         assert_eq!(builder.max_oids_per_request, 20);
         assert_eq!(builder.max_repetitions, 50);
         assert_eq!(builder.walk_mode, WalkMode::GetNext);

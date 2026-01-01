@@ -11,7 +11,7 @@
 //!   docker build -t async-snmp-test:latest tests/containers/snmpd/
 //!   docker run -d -p 11161:161/udp async-snmp-test:latest
 
-use async_snmp::{Auth, AuthProtocol, Client, MasterKeys, PrivProtocol, oid};
+use async_snmp::{Auth, AuthProtocol, Client, MasterKeys, PrivProtocol, Retry, oid};
 use std::time::Duration;
 
 #[tokio::main]
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::builder(target, auth)
         .timeout(Duration::from_secs(10))
-        .retries(3)
+        .retry(Retry::fixed(3, Duration::ZERO))
         .connect()
         .await?;
 
@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Each client reuses the master keys; only localization is performed
         match Client::builder(*target_addr, auth)
             .timeout(Duration::from_secs(2))
-            .retries(1)
+            .retry(Retry::fixed(1, Duration::ZERO))
             .connect()
             .await
         {

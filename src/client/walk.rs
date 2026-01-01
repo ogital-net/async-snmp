@@ -480,6 +480,7 @@ impl<T: Transport + 'static> Stream for WalkStream<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::retry::Retry;
     use crate::transport::{MockTransport, ResponseBuilder};
     use crate::{ClientConfig, Version};
     use bytes::Bytes;
@@ -493,7 +494,7 @@ mod tests {
             version: Version::V2c,
             community: Bytes::from_static(b"public"),
             timeout: Duration::from_secs(1),
-            retries: 0,
+            retry: Retry::none(),
             max_oids_per_request: 10,
             v3_security: None,
             walk_mode: WalkMode::Auto,

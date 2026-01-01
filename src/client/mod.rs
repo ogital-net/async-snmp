@@ -2,11 +2,13 @@
 
 mod auth;
 mod builder;
+mod retry;
 mod v3;
 mod walk;
 
 pub use auth::{Auth, CommunityVersion, UsmAuth, UsmBuilder};
 pub use builder::ClientBuilder;
+pub use retry::{Backoff, Retry, RetryBuilder};
 
 // New unified entry point
 impl Client<UdpTransport> {
@@ -18,7 +20,7 @@ impl Client<UdpTransport> {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use async_snmp::{Auth, Client};
+    /// use async_snmp::{Auth, Client, Retry};
     /// use std::time::Duration;
     ///
     /// # async fn example() -> async_snmp::Result<()> {
@@ -30,7 +32,7 @@ impl Client<UdpTransport> {
     /// let client = Client::builder("192.168.1.1:161",
     ///     Auth::usm("admin").auth(async_snmp::AuthProtocol::Sha256, "password"))
     ///     .timeout(Duration::from_secs(10))
-    ///     .retries(5)
+    ///     .retry(Retry::fixed(5, Duration::ZERO))
     ///     .connect().await?;
     /// # Ok(())
     /// # }
@@ -93,8 +95,8 @@ pub struct ClientConfig {
     pub community: Bytes,
     /// Request timeout (default: 5 seconds)
     pub timeout: Duration,
-    /// Number of retries (default: 3)
-    pub retries: u32,
+    /// Retry configuration (default: 3 retries, no backoff)
+    pub retry: Retry,
     /// Maximum OIDs per request (default: 10)
     pub max_oids_per_request: usize,
     /// SNMPv3 security configuration (default: None)
@@ -118,7 +120,7 @@ impl Default for ClientConfig {
             version: Version::V2c,
             community: Bytes::from_static(b"public"),
             timeout: Duration::from_secs(5),
-            retries: 3,
+            retry: Retry::default(),
             max_oids_per_request: 10,
             v3_security: None,
             walk_mode: WalkMode::Auto,
@@ -195,21 +197,21 @@ impl<T: Transport> Client<T> {
         fields(
             snmp.target = %self.peer_addr(),
             snmp.request_id = request_id,
-            snmp.retries = tracing::field::Empty,
+            snmp.attempt = tracing::field::Empty,
             snmp.elapsed_ms = tracing::field::Empty,
         )
     )]
     async fn send_and_recv(&self, request_id: i32, data: &[u8]) -> Result<Pdu> {
         let start = Instant::now();
         let mut last_error = None;
-        let retries = if self.inner.transport.is_stream() {
+        let max_attempts = if self.inner.transport.is_stream() {
             0
         } else {
-            self.inner.config.retries
+            self.inner.config.retry.max_attempts
         };
 
-        for attempt in 0..=retries {
-            Span::current().record("snmp.retries", attempt);
+        for attempt in 0..=max_attempts {
+            Span::current().record("snmp.attempt", attempt);
             if attempt > 0 {
                 tracing::debug!("retrying request");
             }
@@ -275,6 +277,14 @@ impl<T: Transport> Client<T> {
                 }
                 Err(e @ Error::Timeout { .. }) => {
                     last_error = Some(e);
+                    // Apply backoff delay before next retry (if not last attempt)
+                    if attempt < max_attempts {
+                        let delay = self.inner.config.retry.compute_delay(attempt);
+                        if !delay.is_zero() {
+                            tracing::debug!(delay_ms = delay.as_millis() as u64, "backing off");
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
                     continue;
                 }
                 Err(e) => {
@@ -288,9 +298,9 @@ impl<T: Transport> Client<T> {
         Span::current().record("snmp.elapsed_ms", start.elapsed().as_millis() as u64);
         Err(last_error.unwrap_or(Error::Timeout {
             target: Some(self.peer_addr()),
-            elapsed: self.inner.config.timeout * (retries + 1),
+            elapsed: start.elapsed(),
             request_id,
-            retries,
+            retries: max_attempts,
         }))
     }
 

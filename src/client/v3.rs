@@ -388,7 +388,7 @@ impl<T: Transport> Client<T> {
             snmp.target = %self.peer_addr(),
             snmp.request_id = pdu.request_id,
             snmp.security_level = ?self.inner.config.v3_security.as_ref().map(|s| s.security_level()),
-            snmp.retries = tracing::field::Empty,
+            snmp.attempt = tracing::field::Empty,
             snmp.elapsed_ms = tracing::field::Empty,
         )
     )]
@@ -407,14 +407,14 @@ impl<T: Transport> Client<T> {
         let security_level = security.security_level();
 
         let mut last_error = None;
-        let retries = if self.inner.transport.is_stream() {
+        let max_attempts = if self.inner.transport.is_stream() {
             0
         } else {
-            self.inner.config.retries
+            self.inner.config.retry.max_attempts
         };
 
-        for attempt in 0..=retries {
-            Span::current().record("snmp.retries", attempt);
+        for attempt in 0..=max_attempts {
+            Span::current().record("snmp.attempt", attempt);
             if attempt > 0 {
                 tracing::debug!("retrying V3 request");
             }
@@ -501,6 +501,17 @@ impl<T: Transport> Client<T> {
                             last_error = Some(Error::NotInTimeWindow {
                                 target: Some(self.peer_addr()),
                             });
+                            // Apply backoff delay before retry (if not last attempt)
+                            if attempt < max_attempts {
+                                let delay = self.inner.config.retry.compute_delay(attempt);
+                                if !delay.is_zero() {
+                                    tracing::debug!(
+                                        delay_ms = delay.as_millis() as u64,
+                                        "backing off"
+                                    );
+                                    tokio::time::sleep(delay).await;
+                                }
+                            }
                             continue;
                         }
 
@@ -621,6 +632,14 @@ impl<T: Transport> Client<T> {
                 }
                 Err(e @ Error::Timeout { .. }) => {
                     last_error = Some(e);
+                    // Apply backoff delay before next retry (if not last attempt)
+                    if attempt < max_attempts {
+                        let delay = self.inner.config.retry.compute_delay(attempt);
+                        if !delay.is_zero() {
+                            tracing::debug!(delay_ms = delay.as_millis() as u64, "backing off");
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
                     continue;
                 }
                 Err(e) => {
@@ -634,9 +653,9 @@ impl<T: Transport> Client<T> {
         Span::current().record("snmp.elapsed_ms", start.elapsed().as_millis() as u64);
         Err(last_error.unwrap_or(Error::Timeout {
             target: Some(self.peer_addr()),
-            elapsed: self.inner.config.timeout * (retries + 1),
+            elapsed: start.elapsed(),
             request_id: pdu.request_id,
-            retries,
+            retries: max_attempts,
         }))
     }
 }

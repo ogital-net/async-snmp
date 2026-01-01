@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::Version;
 use crate::client::Auth;
+use crate::client::retry::{Backoff, Retry};
 use crate::v3::{AuthProtocol, PrivProtocol};
 
 /// SNMP version for CLI argument parsing.
@@ -47,6 +48,18 @@ pub enum OutputFormat {
     Raw,
 }
 
+/// Backoff strategy for CLI argument parsing.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum BackoffStrategy {
+    /// No delay between retries (immediate retry on timeout).
+    #[default]
+    None,
+    /// Fixed delay between each retry.
+    Fixed,
+    /// Exponential backoff: delay doubles after each attempt.
+    Exponential,
+}
+
 /// Common arguments shared across all CLI tools.
 #[derive(Debug, Parser)]
 pub struct CommonArgs {
@@ -69,6 +82,22 @@ pub struct CommonArgs {
     /// Retry count.
     #[arg(short = 'r', long = "retries", default_value = "3")]
     pub retries: u32,
+
+    /// Backoff strategy between retries: none, fixed, or exponential.
+    #[arg(long = "backoff", default_value = "none")]
+    pub backoff: BackoffStrategy,
+
+    /// Backoff delay in milliseconds (initial delay for exponential, fixed delay otherwise).
+    #[arg(long = "backoff-delay", default_value = "1000")]
+    pub backoff_delay: u64,
+
+    /// Maximum backoff delay in milliseconds (exponential only).
+    #[arg(long = "backoff-max", default_value = "5000")]
+    pub backoff_max: u64,
+
+    /// Jitter factor for exponential backoff (0.0-1.0, e.g., 0.25 means +/-25%).
+    #[arg(long = "backoff-jitter", default_value = "0.25")]
+    pub backoff_jitter: f64,
 }
 
 impl CommonArgs {
@@ -98,6 +127,25 @@ impl CommonArgs {
     /// Get the timeout as a Duration.
     pub fn timeout_duration(&self) -> Duration {
         Duration::from_secs_f64(self.timeout)
+    }
+
+    /// Build a Retry configuration from the CLI arguments.
+    pub fn retry_config(&self) -> Retry {
+        let backoff = match self.backoff {
+            BackoffStrategy::None => Backoff::None,
+            BackoffStrategy::Fixed => Backoff::Fixed {
+                delay: Duration::from_millis(self.backoff_delay),
+            },
+            BackoffStrategy::Exponential => Backoff::Exponential {
+                initial: Duration::from_millis(self.backoff_delay),
+                max: Duration::from_millis(self.backoff_max),
+                jitter: self.backoff_jitter.clamp(0.0, 1.0),
+            },
+        };
+        Retry {
+            max_attempts: self.retries,
+            backoff,
+        }
     }
 }
 
@@ -413,6 +461,10 @@ mod tests {
             community: "public".to_string(),
             timeout: 5.0,
             retries: 3,
+            backoff: BackoffStrategy::None,
+            backoff_delay: 100,
+            backoff_max: 5000,
+            backoff_jitter: 0.25,
         };
         let addr = args.target_addr().unwrap();
         assert_eq!(addr.port(), 162);
@@ -426,9 +478,81 @@ mod tests {
             community: "public".to_string(),
             timeout: 5.0,
             retries: 3,
+            backoff: BackoffStrategy::None,
+            backoff_delay: 100,
+            backoff_max: 5000,
+            backoff_jitter: 0.25,
         };
         let addr = args.target_addr().unwrap();
         assert_eq!(addr.port(), 161);
+    }
+
+    #[test]
+    fn test_retry_config_none() {
+        let args = CommonArgs {
+            target: "192.168.1.1".to_string(),
+            snmp_version: SnmpVersion::V2c,
+            community: "public".to_string(),
+            timeout: 5.0,
+            retries: 3,
+            backoff: BackoffStrategy::None,
+            backoff_delay: 100,
+            backoff_max: 5000,
+            backoff_jitter: 0.25,
+        };
+        let retry = args.retry_config();
+        assert_eq!(retry.max_attempts, 3);
+        assert!(matches!(retry.backoff, Backoff::None));
+    }
+
+    #[test]
+    fn test_retry_config_fixed() {
+        let args = CommonArgs {
+            target: "192.168.1.1".to_string(),
+            snmp_version: SnmpVersion::V2c,
+            community: "public".to_string(),
+            timeout: 5.0,
+            retries: 5,
+            backoff: BackoffStrategy::Fixed,
+            backoff_delay: 200,
+            backoff_max: 5000,
+            backoff_jitter: 0.25,
+        };
+        let retry = args.retry_config();
+        assert_eq!(retry.max_attempts, 5);
+        assert!(matches!(
+            retry.backoff,
+            Backoff::Fixed { delay } if delay == Duration::from_millis(200)
+        ));
+    }
+
+    #[test]
+    fn test_retry_config_exponential() {
+        let args = CommonArgs {
+            target: "192.168.1.1".to_string(),
+            snmp_version: SnmpVersion::V2c,
+            community: "public".to_string(),
+            timeout: 5.0,
+            retries: 4,
+            backoff: BackoffStrategy::Exponential,
+            backoff_delay: 50,
+            backoff_max: 2000,
+            backoff_jitter: 0.1,
+        };
+        let retry = args.retry_config();
+        assert_eq!(retry.max_attempts, 4);
+        match retry.backoff {
+            Backoff::Exponential {
+                initial,
+                max,
+                jitter,
+            } => {
+                assert_eq!(initial, Duration::from_millis(50));
+                assert_eq!(max, Duration::from_millis(2000));
+                assert!((jitter - 0.1).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected Exponential"),
+        }
     }
 
     #[test]
