@@ -102,7 +102,7 @@ const MAX_TCP_MESSAGE_SIZE: usize = 0x7fffffff;
 /// # No Retries
 ///
 /// Since TCP guarantees delivery or failure, the client does not retry
-/// on timeout when using TCP transport ([`is_stream()`](Transport::is_stream)
+/// on timeout when using TCP transport ([`is_reliable()`](Transport::is_reliable)
 /// returns `true`). A timeout indicates the connection is likely broken.
 ///
 /// # Serialized Operations
@@ -138,6 +138,8 @@ struct TcpTransportInner {
     stream: Arc<Mutex<TcpStream>>,
     /// Holds the stream lock between send() and recv() to serialize operations
     active_guard: std::sync::Mutex<Option<OwnedMutexGuard<TcpStream>>>,
+    /// Timeout for current request (set by register_request)
+    current_timeout: std::sync::Mutex<Duration>,
     target: SocketAddr,
     local_addr: SocketAddr,
 }
@@ -159,6 +161,7 @@ impl TcpTransport {
             inner: Arc::new(TcpTransportInner {
                 stream: Arc::new(Mutex::new(stream)),
                 active_guard: std::sync::Mutex::new(None),
+                current_timeout: std::sync::Mutex::new(Duration::from_secs(30)),
                 target,
                 local_addr,
             }),
@@ -189,6 +192,7 @@ impl TcpTransport {
             inner: Arc::new(TcpTransportInner {
                 stream: Arc::new(Mutex::new(stream)),
                 active_guard: std::sync::Mutex::new(None),
+                current_timeout: std::sync::Mutex::new(Duration::from_secs(30)),
                 target,
                 local_addr,
             }),
@@ -228,7 +232,13 @@ impl Transport for TcpTransport {
         }
     }
 
-    async fn recv(&self, request_id: i32, recv_timeout: Duration) -> Result<(Bytes, SocketAddr)> {
+    fn register_request(&self, _request_id: i32, timeout: Duration) {
+        *self.inner.current_timeout.lock().unwrap() = timeout;
+    }
+
+    async fn recv(&self, request_id: i32) -> Result<(Bytes, SocketAddr)> {
+        let recv_timeout = *self.inner.current_timeout.lock().unwrap();
+
         // Take the guard that was stored by send().
         // This ensures we're reading the response for our request.
         let mut stream = self
@@ -263,7 +273,7 @@ impl Transport for TcpTransport {
         self.inner.local_addr
     }
 
-    fn is_stream(&self) -> bool {
+    fn is_reliable(&self) -> bool {
         true
     }
 }
@@ -428,7 +438,8 @@ mod tests {
         transport.send(&request).await.unwrap();
 
         // Receive response
-        let (response, source) = transport.recv(1, Duration::from_secs(5)).await.unwrap();
+        transport.register_request(1, Duration::from_secs(5));
+        let (response, source) = transport.recv(1).await.unwrap();
 
         assert_eq!(source, server_addr);
         assert_eq!(response[0], 0x30); // SEQUENCE tag
@@ -459,7 +470,8 @@ mod tests {
         let transport = TcpTransport::connect(server_addr).await.unwrap();
         transport.send(&[0x00]).await.unwrap(); // Trigger server
 
-        let (response, _) = transport.recv(1, Duration::from_secs(5)).await.unwrap();
+        transport.register_request(1, Duration::from_secs(5));
+        let (response, _) = transport.recv(1).await.unwrap();
 
         // Verify: tag (1) + length field (2) + content (200) = 203 bytes
         assert_eq!(response.len(), 203);
@@ -471,7 +483,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tcp_is_stream() {
+    async fn test_tcp_is_reliable() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server_addr = listener.local_addr().unwrap();
 
@@ -481,7 +493,7 @@ mod tests {
         });
 
         let transport = TcpTransport::connect(server_addr).await.unwrap();
-        assert!(transport.is_stream());
+        assert!(transport.is_reliable());
     }
 
     /// Test concurrent requests through a single TcpTransport.
@@ -538,8 +550,9 @@ mod tests {
                 let request_id = i + 1;
                 let request = build_request_with_id(request_id);
 
+                transport.register_request(request_id, Duration::from_secs(5));
                 transport.send(&request).await?;
-                let (response, _) = transport.recv(request_id, Duration::from_secs(5)).await?;
+                let (response, _) = transport.recv(request_id).await?;
 
                 // Verify we got a valid response
                 assert_eq!(response[0], 0x30, "Response should be SEQUENCE");

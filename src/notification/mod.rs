@@ -190,8 +190,6 @@ impl NotificationReceiverBuilder {
     }
 
     /// Build the notification receiver.
-    ///
-    /// For IPv6 bind addresses, the socket has `IPV6_V6ONLY` set to true.
     pub async fn build(self) -> Result<NotificationReceiver> {
         let bind_addr: SocketAddr = self.bind_addr.parse().map_err(|_| Error::Io {
             target: None,
@@ -418,8 +416,6 @@ impl NotificationReceiver {
     ///
     /// The standard SNMP notification port is 162.
     /// For V3 authentication support, use `NotificationReceiver::builder()` instead.
-    ///
-    /// For IPv6 bind addresses, the socket has `IPV6_V6ONLY` set to true.
     ///
     /// # Example
     ///

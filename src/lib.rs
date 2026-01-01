@@ -121,15 +121,16 @@
 //! ## Concurrent Operations
 //!
 //! Use standard async patterns to poll multiple devices concurrently.
-//! The [`SharedUdpTransport`] is recommended for polling many targets.
+//! Share a [`UdpTransport`] for polling many targets.
 //!
 //! ```rust,no_run
-//! use async_snmp::{Auth, Client, SharedUdpTransport, oid};
+//! use async_snmp::{Auth, Client, oid};
+//! use async_snmp::transport::UdpTransport;
 //! use futures::future::join_all;
 //!
 //! async fn poll_many_devices(targets: Vec<String>) -> Vec<(String, Result<String, String>)> {
 //!     // Create a shared transport for efficient socket usage
-//!     let transport = SharedUdpTransport::bind("0.0.0.0:0")
+//!     let transport = UdpTransport::bind("0.0.0.0:0")
 //!         .await
 //!         .expect("failed to bind");
 //!
@@ -167,8 +168,8 @@
 //! For polling many targets with shared credentials, cache both:
 //!
 //! ```rust,no_run
-//! use async_snmp::{Auth, AuthProtocol, Client, EngineCache, MasterKeys, PrivProtocol};
-//! use async_snmp::{SharedUdpTransport, oid};
+//! use async_snmp::{Auth, AuthProtocol, Client, EngineCache, MasterKeys, PrivProtocol, oid};
+//! use async_snmp::transport::UdpTransport;
 //! use std::sync::Arc;
 //!
 //! # async fn example() -> async_snmp::Result<()> {
@@ -180,7 +181,7 @@
 //! let engine_cache = Arc::new(EngineCache::new());
 //!
 //! // 3. Use shared transport for socket efficiency
-//! let transport = SharedUdpTransport::bind("0.0.0.0:0").await?;
+//! let transport = UdpTransport::bind("0.0.0.0:0").await?;
 //!
 //! // Poll multiple targets - only ~1μs key localization per engine
 //! for target in ["192.0.2.1:161", "192.0.2.2:161"] {
@@ -202,7 +203,6 @@
 //! |--------------|---------|------|---------|
 //! | `MasterKeys` | 850μs/engine | 1μs/engine | ~99.9% |
 //! | `EngineCache` | 1 RTT/engine | 0 RTT (cached) | 1 RTT |
-//! | `SharedUdpTransport` | 1 socket/target | 1 socket total | FD limits |
 //!
 //! ## Graceful Shutdown
 //!
@@ -410,7 +410,7 @@ pub use notification::{
 };
 pub use oid::Oid;
 pub use pdu::{GenericTrap, Pdu, PduType, TrapV1Pdu};
-pub use transport::{SharedUdpHandle, SharedUdpTransport, TcpTransport, Transport, UdpTransport};
+pub use transport::{TcpTransport, Transport, UdpHandle, UdpTransport};
 pub use v3::{
     AuthProtocol, EngineCache, LocalizedKey, MasterKey, MasterKeys, ParseProtocolError,
     PrivProtocol,
@@ -419,17 +419,10 @@ pub use value::Value;
 pub use varbind::VarBind;
 pub use version::Version;
 
-/// Type alias for a client using the shared UDP transport.
+/// Type alias for a client using UDP transport.
 ///
-/// This is useful for high-throughput scenarios where many clients share
-/// a single UDP socket via [`SharedUdpTransport`].
-pub type SharedClient = Client<SharedUdpHandle>;
-
-/// Type alias for a client using a dedicated UDP socket.
-///
-/// This is the default transport type, suitable for most use cases
-/// with up to ~100 concurrent targets.
-pub type UdpClient = Client<UdpTransport>;
+/// This is the default and most common client type.
+pub type UdpClient = Client<UdpHandle>;
 
 /// Type alias for a client using a TCP connection.
 pub type TcpClient = Client<TcpTransport>;

@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use connect_tcp() instead of connect()
     let client = Client::builder(target, Auth::v2c("public"))
         .timeout(Duration::from_secs(10))
-        // Note: retries are ignored for TCP (is_stream = true)
+        // Note: retries are ignored for TCP (is_reliable = true)
         .retry(Retry::fixed(3, Duration::ZERO))
         .connect_tcp()
         .await?;
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("TCP transport connected");
             println!("  Local:  {}", transport.local_addr());
             println!("  Remote: {}", transport.peer_addr());
-            println!("  Stream: {}", transport.is_stream()); // Always true for TCP
+            println!("  Reliable: {}", transport.is_reliable()); // Always true for TCP
 
             // Use with ClientBuilder
             let client = Client::builder(target, Auth::v2c("public"))
@@ -171,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     println!("TCP client:");
-    println!("  Retries: Ignored (is_stream = true)");
+    println!("  Retries: Ignored (is_reliable = true)");
     println!("  Behavior: Single attempt, TCP guarantees delivery");
 
     // Demonstrate both clients work the same way
@@ -205,7 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Polling many targets (one socket per target with TCP)");
     println!("  - Low latency is critical (no TCP handshake)");
     println!("  - Agent doesn't support TCP (most don't by default)");
-    println!("  - Using SharedUdpTransport for high-throughput polling");
+    println!("  - Sharing a UdpTransport for high-throughput polling");
 
     println!("\nExample complete!");
     Ok(())

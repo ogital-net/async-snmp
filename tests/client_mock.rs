@@ -768,15 +768,15 @@ async fn test_null_value() {
 async fn test_request_id_mismatch_rejected() {
     let mut mock = MockTransport::new("127.0.0.1:161".parse().unwrap());
 
-    // Queue a response with a DIFFERENT request ID than what the client will send
-    // The client starts with request_id=1, so we send a response with request_id=9999
+    // Queue a response with a DIFFERENT request ID than what the client will send.
+    // Use queue_raw_response to bypass the automatic request_id patching.
     let response = ResponseBuilder::new(9999) // Wrong request ID
         .varbind(
             oid!(1, 3, 6, 1, 2, 1, 1, 1, 0),
             Value::OctetString("Test".into()),
         )
         .build_v2c(b"public");
-    mock.queue_response(response);
+    mock.queue_raw_response(response);
 
     let client = create_mock_client(mock);
     let result = client.get(&oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)).await;
@@ -784,7 +784,7 @@ async fn test_request_id_mismatch_rejected() {
     // Should fail with RequestIdMismatch error
     match result {
         Err(Error::RequestIdMismatch { expected, actual }) => {
-            // Expected is what the client sent (starts at 1), actual is 9999
+            // Expected is what the client sent, actual is 9999 (mismatched)
             assert_ne!(expected, actual);
             assert_eq!(actual, 9999);
         }

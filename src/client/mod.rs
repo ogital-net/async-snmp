@@ -11,7 +11,7 @@ pub use builder::ClientBuilder;
 pub use retry::{Backoff, Retry, RetryBuilder};
 
 // New unified entry point
-impl Client<UdpTransport> {
+impl Client<UdpHandle> {
     /// Create a new SNMP client builder.
     ///
     /// This is the single entry point for client construction, supporting all
@@ -46,7 +46,7 @@ use crate::message::{CommunityMessage, Message};
 use crate::oid::Oid;
 use crate::pdu::{GetBulkPdu, Pdu};
 use crate::transport::Transport;
-use crate::transport::UdpTransport;
+use crate::transport::UdpHandle;
 use crate::v3::{EngineCache, EngineState, SaltCounter};
 use crate::value::Value;
 use crate::varbind::VarBind;
@@ -55,7 +55,6 @@ use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{Span, instrument};
 
@@ -64,16 +63,15 @@ pub use walk::{BulkWalk, OidOrdering, Walk, WalkMode, WalkStream};
 
 /// SNMP client.
 ///
-/// Generic over transport type, with `UdpTransport` as default.
+/// Generic over transport type, with `UdpHandle` as default.
 #[derive(Clone)]
-pub struct Client<T: Transport = UdpTransport> {
+pub struct Client<T: Transport = UdpHandle> {
     inner: Arc<ClientInner<T>>,
 }
 
 struct ClientInner<T: Transport> {
     transport: T,
     config: ClientConfig,
-    request_id: AtomicI32,
     /// Cached engine state (V3)
     engine_state: RwLock<Option<EngineState>>,
     /// Derived keys for this engine (V3)
@@ -138,7 +136,6 @@ impl<T: Transport> Client<T> {
             inner: Arc::new(ClientInner {
                 transport,
                 config,
-                request_id: AtomicI32::new(1),
                 engine_state: RwLock::new(None),
                 derived_keys: RwLock::new(None),
                 salt_counter: SaltCounter::new(),
@@ -157,7 +154,6 @@ impl<T: Transport> Client<T> {
             inner: Arc::new(ClientInner {
                 transport,
                 config,
-                request_id: AtomicI32::new(1),
                 engine_state: RwLock::new(None),
                 derived_keys: RwLock::new(None),
                 salt_counter: SaltCounter::new(),
@@ -176,13 +172,9 @@ impl<T: Transport> Client<T> {
 
     /// Generate next request ID.
     ///
-    /// Uses the transport's shared counter if available (for shared transports),
-    /// otherwise uses the client's own counter.
+    /// Uses the transport's allocator (backed by a global counter).
     fn next_request_id(&self) -> i32 {
-        self.inner
-            .transport
-            .alloc_request_id()
-            .unwrap_or_else(|| self.inner.request_id.fetch_add(1, Ordering::Relaxed))
+        self.inner.transport.alloc_request_id()
     }
 
     /// Check if using V3 with authentication/encryption configured.
@@ -204,7 +196,7 @@ impl<T: Transport> Client<T> {
     async fn send_and_recv(&self, request_id: i32, data: &[u8]) -> Result<Pdu> {
         let start = Instant::now();
         let mut last_error = None;
-        let max_attempts = if self.inner.transport.is_stream() {
+        let max_attempts = if self.inner.transport.is_reliable() {
             0
         } else {
             self.inner.config.retry.max_attempts
@@ -216,17 +208,17 @@ impl<T: Transport> Client<T> {
                 tracing::debug!("retrying request");
             }
 
+            // Register (or re-register) with fresh deadline before sending
+            self.inner
+                .transport
+                .register_request(request_id, self.inner.config.timeout);
+
             // Send request
             tracing::trace!(snmp.bytes = data.len(), "sending request");
             self.inner.transport.send(data).await?;
 
-            // Wait for response
-            match self
-                .inner
-                .transport
-                .recv(request_id, self.inner.config.timeout)
-                .await
-            {
+            // Wait for response (deadline was set by register_request)
+            match self.inner.transport.recv(request_id).await {
                 Ok((response_data, _source)) => {
                     tracing::trace!(snmp.bytes = response_data.len(), "received response");
 

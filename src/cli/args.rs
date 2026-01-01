@@ -7,8 +7,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::Version;
-use crate::client::Auth;
-use crate::client::retry::{Backoff, Retry};
+use crate::client::{Auth, Backoff, Retry};
 use crate::v3::{AuthProtocol, PrivProtocol};
 
 /// SNMP version for CLI argument parsing.

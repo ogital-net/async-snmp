@@ -195,16 +195,16 @@ impl AgentBuilder {
     /// # }
     /// ```
     ///
-    /// # IPv6 Examples
+    /// # IPv6 / Dual-Stack Examples
     ///
     /// ```rust,no_run
     /// use async_snmp::agent::Agent;
     ///
     /// # async fn example() -> Result<(), async_snmp::Error> {
-    /// // Bind to all IPv6 interfaces (IPv6_V6ONLY is set, no IPv4 traffic)
+    /// // Bind to all interfaces via dual-stack (handles both IPv4 and IPv6)
     /// let agent = Agent::builder().bind("[::]:161").community(b"public").build().await?;
     ///
-    /// // Bind to IPv6 localhost
+    /// // Bind to IPv6 localhost only
     /// let agent = Agent::builder().bind("[::1]:1161").community(b"public").build().await?;
     /// # Ok(())
     /// # }
@@ -438,8 +438,6 @@ impl AgentBuilder {
     }
 
     /// Build the agent.
-    ///
-    /// For IPv6 bind addresses, the socket has `IPV6_V6ONLY` set to true.
     pub async fn build(mut self) -> Result<Agent> {
         let bind_addr: std::net::SocketAddr = self.bind_addr.parse().map_err(|_| Error::Io {
             target: None,

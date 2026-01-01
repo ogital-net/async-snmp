@@ -15,8 +15,10 @@ use std::time::Duration;
 /// A mock response to return for a request.
 #[derive(Clone, Debug)]
 pub enum MockResponse {
-    /// Return this data as the response
+    /// Return this data as the response (request_id will be patched to match)
     Data(Bytes),
+    /// Return this data as-is without patching request_id
+    RawData(Bytes),
     /// Simulate a timeout
     Timeout,
     /// Simulate an IO error
@@ -42,6 +44,10 @@ struct MockTransportInner {
     requests: Vec<RecordedRequest>,
     /// Default response when queue is empty
     default_response: Option<MockResponse>,
+    /// Current timeout (set by register_request)
+    current_timeout: Duration,
+    /// Last request_id seen (for patching responses)
+    last_request_id: Option<i32>,
 }
 
 /// Mock transport for testing SNMP client functionality.
@@ -76,14 +82,31 @@ impl MockTransport {
                 responses: VecDeque::new(),
                 requests: Vec::new(),
                 default_response: None,
+                current_timeout: Duration::from_secs(5),
+                last_request_id: None,
             })),
         }
     }
 
     /// Queue a data response.
+    ///
+    /// The request_id in the response will be automatically patched to match
+    /// the actual request. Use [`queue_raw_response`](Self::queue_raw_response)
+    /// to bypass patching for testing request_id mismatch scenarios.
     pub fn queue_response(&mut self, data: impl Into<Bytes>) {
         let mut inner = self.inner.lock().unwrap();
         inner.responses.push_back(MockResponse::Data(data.into()));
+    }
+
+    /// Queue a raw data response without request_id patching.
+    ///
+    /// Unlike [`queue_response`](Self::queue_response), this returns the data
+    /// exactly as provided, allowing tests to simulate request_id mismatches.
+    pub fn queue_raw_response(&mut self, data: impl Into<Bytes>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner
+            .responses
+            .push_back(MockResponse::RawData(data.into()));
     }
 
     /// Queue a timeout.
@@ -136,6 +159,33 @@ impl MockTransport {
         }
         None
     }
+
+    /// Patch the request_id in an SNMP response to match the actual request.
+    ///
+    /// This allows tests to queue responses with placeholder request_ids
+    /// and have them automatically patched to match the real request.
+    fn patch_response_request_id(data: Bytes, new_id: i32) -> Bytes {
+        use crate::message::Message;
+
+        // Decode, patch, re-encode
+        let Ok(msg) = Message::decode(data.clone()) else {
+            return data; // Can't decode, return as-is
+        };
+
+        // Re-encode with patched PDU
+        match msg {
+            Message::Community(mut cm) => {
+                cm.pdu.request_id = new_id;
+                cm.encode()
+            }
+            Message::V3(_) => {
+                // V3 messages are more complex (auth/encryption).
+                // For now, return as-is. Tests using V3 should use
+                // correct request_ids or a different approach.
+                data
+            }
+        }
+    }
 }
 
 impl Transport for MockTransport {
@@ -145,15 +195,18 @@ impl Transport for MockTransport {
 
         let mut inner = self.inner.lock().unwrap();
         inner.requests.push(RecordedRequest { data, request_id });
+        // Store the request_id for response patching
+        inner.last_request_id = request_id;
 
         async { Ok(()) }
     }
 
-    fn recv(
-        &self,
-        request_id: i32,
-        timeout: Duration,
-    ) -> impl Future<Output = Result<(Bytes, SocketAddr)>> + Send {
+    fn register_request(&self, _request_id: i32, timeout: Duration) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.current_timeout = timeout;
+    }
+
+    fn recv(&self, request_id: i32) -> impl Future<Output = Result<(Bytes, SocketAddr)>> + Send {
         let inner = self.inner.clone();
         let target = {
             let guard = inner.lock().unwrap();
@@ -161,16 +214,29 @@ impl Transport for MockTransport {
         };
 
         async move {
-            let response = {
+            let (response, timeout, last_req_id) = {
                 let mut guard = inner.lock().unwrap();
-                guard
+                let resp = guard
                     .responses
                     .pop_front()
-                    .or_else(|| guard.default_response.clone())
+                    .or_else(|| guard.default_response.clone());
+                (resp, guard.current_timeout, guard.last_request_id)
             };
 
             match response {
-                Some(MockResponse::Data(data)) => Ok((data, target)),
+                Some(MockResponse::Data(data)) => {
+                    // Patch the response to use the actual request_id from the request
+                    let patched = if let Some(req_id) = last_req_id {
+                        Self::patch_response_request_id(data, req_id)
+                    } else {
+                        data
+                    };
+                    Ok((patched, target))
+                }
+                Some(MockResponse::RawData(data)) => {
+                    // Return data as-is without patching (for testing request_id mismatch)
+                    Ok((data, target))
+                }
                 Some(MockResponse::Timeout) => Err(Error::Timeout {
                     target: Some(target),
                     elapsed: timeout,
@@ -200,7 +266,7 @@ impl Transport for MockTransport {
         "127.0.0.1:0".parse().unwrap()
     }
 
-    fn is_stream(&self) -> bool {
+    fn is_reliable(&self) -> bool {
         false
     }
 }
@@ -319,7 +385,8 @@ mod tests {
         mock.send(b"dummy request").await.unwrap();
 
         // Receive should return our response
-        let (data, _addr) = mock.recv(1, Duration::from_secs(1)).await.unwrap();
+        mock.register_request(1, Duration::from_secs(1));
+        let (data, _addr) = mock.recv(1).await.unwrap();
         assert_eq!(data, response);
     }
 
@@ -330,7 +397,8 @@ mod tests {
 
         mock.send(b"request").await.unwrap();
 
-        let result = mock.recv(1, Duration::from_millis(100)).await;
+        mock.register_request(1, Duration::from_millis(100));
+        let result = mock.recv(1).await;
         assert!(matches!(result, Err(Error::Timeout { .. })));
     }
 
@@ -361,11 +429,13 @@ mod tests {
         mock.set_default_response(MockResponse::Data(response.clone()));
 
         // First recv uses default
-        let (data1, _) = mock.recv(1, Duration::from_secs(1)).await.unwrap();
+        mock.register_request(1, Duration::from_secs(1));
+        let (data1, _) = mock.recv(1).await.unwrap();
         assert_eq!(data1, response);
 
         // Second recv also uses default
-        let (data2, _) = mock.recv(2, Duration::from_secs(1)).await.unwrap();
+        mock.register_request(2, Duration::from_secs(1));
+        let (data2, _) = mock.recv(2).await.unwrap();
         assert_eq!(data2, response);
     }
 }

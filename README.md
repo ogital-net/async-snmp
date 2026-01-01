@@ -119,12 +119,12 @@ async fn main() -> Result<(), async_snmp::Error> {
 For monitoring systems polling thousands of targets:
 
 ```rust
-use async_snmp::{Auth, Client, SharedUdpTransport, oid};
+use async_snmp::{Auth, Client, UdpTransport, oid};
 
 #[tokio::main]
 async fn main() -> Result<(), async_snmp::Error> {
     // Single socket shared across all clients
-    let shared = SharedUdpTransport::bind("0.0.0.0:0").await?;
+    let shared = UdpTransport::bind("0.0.0.0:0").await?;
 
     let targets = vec!["192.168.1.1:161", "192.168.1.2:161", "192.168.1.3:161"];
 

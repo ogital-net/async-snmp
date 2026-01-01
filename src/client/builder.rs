@@ -14,7 +14,7 @@ use crate::client::retry::Retry;
 use crate::client::walk::{OidOrdering, WalkMode};
 use crate::client::{Auth, ClientConfig, CommunityVersion, V3SecurityConfig};
 use crate::error::Error;
-use crate::transport::{TcpTransport, Transport, UdpTransport};
+use crate::transport::{TcpTransport, Transport, UdpHandle, UdpTransport};
 use crate::v3::EngineCache;
 use crate::version::Version;
 
@@ -450,7 +450,7 @@ impl ClientBuilder {
     /// overhead compared to TCP.
     ///
     /// For high-throughput scenarios with many targets, consider using
-    /// [`SharedUdpTransport`](crate::SharedUdpTransport) with [`build()`](Self::build).
+    /// [`UdpTransport`](crate::transport::UdpTransport) with [`build_with()`](Self::build_with).
     ///
     /// # Errors
     ///
@@ -468,11 +468,41 @@ impl ClientBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn connect(self) -> Result<Client<UdpTransport>, Error> {
+    pub async fn connect(self) -> Result<Client<UdpHandle>, Error> {
         self.validate()?;
         let addr = self.resolve_target()?;
-        let transport = UdpTransport::connect(addr).await?;
-        Ok(self.build_inner(transport))
+        // Use dual-stack socket for both IPv4 and IPv6 targets
+        let transport = UdpTransport::bind("[::]:0").await?;
+        let handle = transport.handle(addr);
+        Ok(self.build_inner(handle))
+    }
+
+    /// Build a client using a shared UDP transport.
+    ///
+    /// Creates a handle for the builder's target address from the given transport.
+    /// This is the recommended way to create multiple clients that share a socket.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use async_snmp::{Auth, ClientBuilder};
+    /// use async_snmp::transport::UdpTransport;
+    ///
+    /// # async fn example() -> async_snmp::Result<()> {
+    /// let transport = UdpTransport::bind("0.0.0.0:0").await?;
+    ///
+    /// let client1 = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
+    ///     .build_with(&transport)?;
+    /// let client2 = ClientBuilder::new("192.168.1.2:161", Auth::v2c("public"))
+    ///     .build_with(&transport)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn build_with(self, transport: &UdpTransport) -> Result<Client<UdpHandle>, Error> {
+        self.validate()?;
+        let addr = self.resolve_target()?;
+        let handle = transport.handle(addr);
+        Ok(self.build_inner(handle))
     }
 
     /// Connect via TCP.
@@ -511,9 +541,10 @@ impl ClientBuilder {
     /// Build a client with a custom transport.
     ///
     /// Use this method when you need:
-    /// - A shared UDP transport for high-throughput polling of many targets
     /// - A custom transport implementation
     /// - To reuse an existing transport
+    ///
+    /// For UDP shared transport usage, prefer [`build_with()`](Self::build_with).
     ///
     /// # Errors
     ///
@@ -522,16 +553,17 @@ impl ClientBuilder {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use async_snmp::{Auth, ClientBuilder, SharedUdpTransport};
+    /// use async_snmp::{Auth, ClientBuilder};
+    /// use async_snmp::transport::UdpTransport;
     ///
     /// # async fn example() -> async_snmp::Result<()> {
-    /// // Create a shared transport for polling many targets
-    /// let shared = SharedUdpTransport::bind("0.0.0.0:0").await?;
+    /// // Create a transport
+    /// let transport = UdpTransport::bind("0.0.0.0:0").await?;
     ///
     /// // Create a handle for a specific target
-    /// let handle = shared.handle("192.168.1.1:161".parse().unwrap());
+    /// let handle = transport.handle("192.168.1.1:161".parse().unwrap());
     ///
-    /// // Build client with the shared transport handle
+    /// // Build client with the handle
     /// let client = ClientBuilder::new("192.168.1.1:161", Auth::v2c("public"))
     ///     .build(handle)?;
     /// # Ok(())

@@ -1,32 +1,28 @@
 //! Transport layer abstraction for SNMP communication.
 //!
-//! This module provides the [`Transport`] trait and three implementations:
+//! This module provides the [`Transport`] trait and implementations:
 //!
-//! - [`UdpTransport`] - One connected UDP socket per target (simple, default)
-//! - [`SharedUdpTransport`] - Single UDP socket for many targets (high-throughput)
-//! - [`TcpTransport`] - TCP stream with BER framing (reliable, larger messages)
+//! - [`UdpTransport`] + [`UdpHandle`] - UDP socket with per-target handles
+//! - [`TcpTransport`] - TCP stream with BER framing
 //!
 //! # Choosing a Transport
 //!
-//! | Scenario | Recommended Transport |
-//! |----------|----------------------|
-//! | Normal use (1-100 targets) | [`UdpTransport`] via [`Client::builder().connect()`](crate::Client::builder) |
-//! | High-throughput (100-10,000+ targets) | [`SharedUdpTransport`] with handles |
-//! | Firewall/NAT traversal | [`TcpTransport`] via [`Client::builder().connect_tcp()`](crate::ClientBuilder::connect_tcp) |
-//! | Large SNMP messages (>64KB) | [`TcpTransport`] |
+//! | Scenario | Recommended Approach |
+//! |----------|---------------------|
+//! | Simple use | [`Client::builder().connect()`](crate::Client::builder) |
+//! | Multiple targets | Share a [`UdpTransport`] via [`build_with()`](crate::ClientBuilder::build_with) |
+//! | Firewall/NAT | [`Client::builder().connect_tcp()`](crate::ClientBuilder::connect_tcp) |
 //!
 //! Most users should use [`Client::builder()`](crate::Client::builder) which creates
-//! the appropriate transport automatically. Direct transport construction is only
-//! needed for advanced use cases like shared transports.
+//! the appropriate transport automatically.
 
-mod shared;
 mod tcp;
 mod udp;
+mod udp_core;
 
 #[cfg(any(test, feature = "testing"))]
 mod mock;
 
-pub use shared::*;
 pub use tcp::*;
 pub use udp::*;
 
@@ -37,57 +33,79 @@ use crate::error::Result;
 use bytes::Bytes;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
+
+/// Global request ID counter, initialized with random seed.
+///
+/// Using a global counter ensures request IDs are unique across all
+/// transports within the process, preventing collisions when multiple
+/// transports exist or when sockets are rapidly recreated.
+static REQUEST_ID_COUNTER: LazyLock<AtomicI32> = LazyLock::new(|| {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let time_component = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i32)
+        .unwrap_or(1);
+    let pid_component = std::process::id() as i32;
+    AtomicI32::new(time_component.wrapping_add(pid_component))
+});
+
+/// Allocate a globally unique request ID.
+///
+/// Returns a non-zero i32 that is unique within this process.
+/// The counter is seeded with time + PID to minimize collision
+/// risk across process restarts.
+pub fn alloc_request_id() -> i32 {
+    loop {
+        let id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+        // Skip zero - some agents treat it specially
+    }
+}
 
 /// Client-side transport abstraction.
 ///
 /// All transports implement this trait uniformly. For shared transports,
 /// handles (not the pool itself) implement Transport.
-///
-/// # Clone Requirement
-///
-/// The `Clone` bound is required because walk streams own a clone of the client
-/// (and thus the transport). This enables concurrent walks without borrow conflicts.
-/// All implementations use `Arc` internally, making clone cheap (reference count increment).
 pub trait Transport: Send + Sync + Clone {
     /// Send request data to the target.
     fn send(&self, data: &[u8]) -> impl Future<Output = Result<()>> + Send;
 
-    /// Receive response with correlation and timeout.
+    /// Wait for response. Uses deadline set by `register_request()`.
     ///
-    /// - `request_id`: Used for response correlation (required for shared transports,
-    ///   can be used for validation on owned transports)
-    /// - `timeout`: Maximum time to wait for response
-    ///
-    /// Returns (response_data, actual_source_address)
-    fn recv(
-        &self,
-        request_id: i32,
-        timeout: Duration,
-    ) -> impl Future<Output = Result<(Bytes, SocketAddr)>> + Send;
+    /// For UDP transports, the deadline was stored during registration.
+    /// For TCP transports, uses the timeout parameter.
+    fn recv(&self, request_id: i32) -> impl Future<Output = Result<(Bytes, SocketAddr)>> + Send;
 
     /// The peer address for this transport.
-    ///
-    /// Returns the remote address that this transport sends to and receives from.
-    /// Named to match [`std::net::TcpStream::peer_addr()`].
     fn peer_addr(&self) -> SocketAddr;
 
     /// Local bind address.
     fn local_addr(&self) -> SocketAddr;
 
-    /// Whether this is a stream transport (TCP/TLS).
+    /// Allocate the next request ID.
     ///
-    /// When true, Client skips retries (stream guarantees delivery or failure).
-    /// When false (UDP/DTLS), Client retries on timeout.
-    fn is_stream(&self) -> bool;
+    /// Default uses the global allocator for process-wide uniqueness.
+    fn alloc_request_id(&self) -> i32 {
+        alloc_request_id()
+    }
 
-    /// Allocate a request ID from the transport's shared counter.
+    /// Whether this is a reliable transport (TCP/TLS).
     ///
-    /// For shared transports (e.g., `SharedUdpHandle`), this returns a unique
-    /// request ID from a shared counter to prevent collisions between clients.
-    /// For owned transports, returns `None` and the client uses its own counter.
-    fn alloc_request_id(&self) -> Option<i32> {
-        None
+    /// When true, Client skips retries (transport guarantees delivery or failure).
+    /// When false (UDP/DTLS), Client retries on timeout.
+    fn is_reliable(&self) -> bool;
+
+    /// Pre-register a request with timeout before sending.
+    ///
+    /// UDP transports use this to create the response slot with deadline.
+    /// TCP transports ignore this (default no-op).
+    fn register_request(&self, _request_id: i32, _timeout: Duration) {
+        // Default: no-op for TCP and other transports that don't need pre-registration
     }
 }
 

@@ -200,13 +200,12 @@ impl<T: Transport> Client<T> {
         let discovery_msg = V3Message::discovery_request(msg_id);
         let discovery_data = discovery_msg.encode();
 
-        // Send discovery and wait for response
-        self.inner.transport.send(&discovery_data).await?;
-        let (response_data, _source) = self
-            .inner
+        // Register request and send discovery
+        self.inner
             .transport
-            .recv(msg_id, self.inner.config.timeout)
-            .await?;
+            .register_request(msg_id, self.inner.config.timeout);
+        self.inner.transport.send(&discovery_data).await?;
+        let (response_data, _source) = self.inner.transport.recv(msg_id).await?;
 
         // Parse response
         let response = V3Message::decode(response_data)?;
@@ -407,7 +406,7 @@ impl<T: Transport> Client<T> {
         let security_level = security.security_level();
 
         let mut last_error = None;
-        let max_attempts = if self.inner.transport.is_stream() {
+        let max_attempts = if self.inner.transport.is_reliable() {
             0
         } else {
             self.inner.config.retry.max_attempts
@@ -431,16 +430,16 @@ impl<T: Transport> Client<T> {
             );
             tracing::trace!(snmp.bytes = data.len(), "sending V3 request");
 
+            // Register (or re-register) with fresh deadline before sending
+            self.inner
+                .transport
+                .register_request(msg_id, self.inner.config.timeout);
+
             // Send request
             self.inner.transport.send(&data).await?;
 
-            // Wait for response
-            match self
-                .inner
-                .transport
-                .recv(msg_id, self.inner.config.timeout)
-                .await
-            {
+            // Wait for response (deadline was set by register_request)
+            match self.inner.transport.recv(msg_id).await {
                 Ok((response_data, _source)) => {
                     tracing::trace!(snmp.bytes = response_data.len(), "received V3 response");
 

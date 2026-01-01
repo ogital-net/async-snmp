@@ -1,312 +1,369 @@
-//! UDP transport implementation for SNMP clients.
+//! Unified UDP transport for SNMP clients.
 //!
-//! This module provides [`UdpTransport`], a simple UDP-based transport for SNMP
-//! communication. Each transport instance owns a "connected" UDP socket bound
-//! to a specific target.
+//! This module provides [`UdpTransport`] (the socket owner) and [`UdpHandle`]
+//! (per-target handles that implement [`Transport`]).
 //!
-//! # Connection Behavior
+//! # Architecture
 //!
-//! Despite the term "connected", UDP sockets created by [`UdpTransport::connect()`]
-//! do not establish a stateful connection like TCP. Instead, the kernel:
+//! ```text
+//! +------------------+
+//! |   UdpTransport   |  (owns socket, runs recv loop, manages shutdown)
+//! +------------------+
+//!          |
+//!          | Arc<UdpTransportInner>
+//!          v
+//! +------------------+     +------------------+     +------------------+
+//! |    UdpHandle     |     |    UdpHandle     |     |    UdpHandle     |
+//! |  target: 10.0.0.1|     |  target: 10.0.0.2|     |  target: 10.0.0.3|
+//! +------------------+     +------------------+     +------------------+
+//!          |                        |                        |
+//!          v                        v                        v
+//! +------------------+     +------------------+     +------------------+
+//! | Client<UdpHandle>|     | Client<UdpHandle>|     | Client<UdpHandle>|
+//! +------------------+     +------------------+     +------------------+
+//! ```
 //!
-//! 1. Associates the socket with the target address for `send()` calls
-//! 2. Filters incoming packets to only accept those from the target
-//! 3. Enables better error reporting (e.g., ICMP port unreachable)
-//!
-//! This is more efficient than unconnected UDP for single-target communication.
-//!
-//! # When to Use
-//!
-//! - **1-100 targets**: `UdpTransport` is simpler and sufficient
-//! - **100+ targets**: Consider [`SharedUdpTransport`](super::SharedUdpTransport)
-//!   to reduce socket overhead
-//! - **Reliable delivery needed**: Use [`TcpTransport`](super::TcpTransport) instead
-//!
-//! # Example
+//! # Usage
 //!
 //! ```rust,no_run
 //! use async_snmp::{Auth, Client};
-//! use std::time::Duration;
+//! use async_snmp::transport::UdpTransport;
 //!
 //! # async fn example() -> async_snmp::Result<()> {
-//! // The standard way to create a UDP client
+//! // Simple: Client creates transport internally
 //! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
-//!     .timeout(Duration::from_secs(5))
-//!     .retries(3)
 //!     .connect()
 //!     .await?;
+//!
+//! // High-throughput: share transport across clients (IPv4 and IPv6)
+//! let transport = UdpTransport::bind("[::]:0").await?;
+//! let client1 = Client::builder("192.168.1.1:161", Auth::v2c("public"))
+//!     .build_with(&transport)?;
+//! let client2 = Client::builder("[::1]:161", Auth::v2c("public"))
+//!     .build_with(&transport)?;  // Same transport handles both!
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! For direct transport construction:
+//! # Dual-Stack Support
 //!
-//! ```rust,no_run
-//! use async_snmp::transport::UdpTransport;
-//! use async_snmp::{Client, ClientConfig};
+//! The default bind address `[::]:0` creates a dual-stack socket that handles
+//! both IPv4 and IPv6 targets. IPv4 addresses are transparently mapped to
+//! IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`).
 //!
-//! # async fn example() -> async_snmp::Result<()> {
-//! let transport = UdpTransport::connect("192.168.1.1:161".parse().unwrap()).await?;
-//! let client = Client::new(transport, ClientConfig::default());
-//! # Ok(())
-//! # }
-//! ```
+//! Note: Dual-stack behavior follows Linux conventions. Other platforms
+//! (Windows, BSD) are untested and may require separate IPv4/IPv6 sockets.
 
+use super::udp_core::UdpCore;
 use super::{Transport, extract_request_id};
 use crate::error::{Error, Result};
-use crate::util::bind_ephemeral_udp_socket;
+use crate::util::bind_udp_socket;
 use bytes::Bytes;
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
-/// UDP transport for a single target.
+/// Maximum UDP datagram size for receiving.
 ///
-/// Each `UdpTransport` owns a connected UDP socket to a specific target.
-/// For high-throughput scenarios with many targets, consider using
-/// [`SharedUdpTransport`](super::SharedUdpTransport) instead.
-///
-/// # Cloning
-///
-/// `UdpTransport` uses `Arc` internally, so cloning is cheap. Multiple clients
-/// can share the same transport, though this is typically only useful for
-/// different SNMP configurations to the same target.
-///
-/// # Concurrent Request Handling
-///
-/// When multiple concurrent requests are made through the same `UdpTransport`,
-/// responses are properly correlated using request IDs. If a caller receives a
-/// response for a different request, it buffers the response for the correct caller.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use async_snmp::transport::UdpTransport;
-/// use async_snmp::{Client, ClientConfig};
-/// use std::time::Duration;
-///
-/// # async fn example() -> async_snmp::Result<()> {
-/// // Connect with a timeout
-/// let transport = UdpTransport::connect_timeout(
-///     "192.168.1.1:161".parse().unwrap(),
-///     Duration::from_secs(5)
-/// ).await?;
-///
-/// let client = Client::new(transport, ClientConfig::default());
-/// # Ok(())
-/// # }
-/// ```
+/// This is the UDP payload limit: 65535 - 20 (IP header) - 8 (UDP header) = 65507.
+/// We use 65535 to be safe with any potential header variations.
+const UDP_RECV_BUFFER_SIZE: usize = 65535;
+
+/// Configuration for UDP transport.
 #[derive(Clone)]
+pub struct UdpTransportConfig {
+    /// Maximum message size for sending (default: 1472, fits Ethernet MTU).
+    ///
+    /// This affects the advertised msgMaxSize in SNMPv3 requests. The receive
+    /// buffer is always sized to accept the maximum UDP datagram (65535 bytes).
+    pub max_message_size: usize,
+    /// Log warning when response source differs from target (default: true)
+    pub warn_on_source_mismatch: bool,
+}
+
+impl Default for UdpTransportConfig {
+    fn default() -> Self {
+        Self {
+            max_message_size: 1472,
+            warn_on_source_mismatch: true,
+        }
+    }
+}
+
+/// UDP transport that can serve multiple targets.
+///
+/// Owns a single UDP socket and spawns a background receiver task.
+/// Create [`UdpHandle`]s for each target via [`handle()`](Self::handle).
 pub struct UdpTransport {
     inner: Arc<UdpTransportInner>,
 }
 
 struct UdpTransportInner {
     socket: UdpSocket,
-    target: SocketAddr,
     local_addr: SocketAddr,
-    /// Buffer for responses received by one caller but intended for another.
-    pending: Mutex<HashMap<i32, Bytes>>,
+    core: UdpCore,
+    config: UdpTransportConfig,
+    shutdown: CancellationToken,
 }
 
 impl UdpTransport {
-    /// Connect to a target address.
+    /// Bind to the given address with default configuration.
     ///
-    /// Creates an ephemeral UDP socket bound to the appropriate address family.
-    /// For IPv6 targets, the socket has `IPV6_V6ONLY` set to true.
-    pub async fn connect(target: SocketAddr) -> Result<Self> {
-        tracing::debug!(snmp.target = %target, "connecting UDP transport");
+    /// For dual-stack support (both IPv4 and IPv6 targets), bind to `[::]:0`.
+    pub async fn bind(addr: impl AsRef<str>) -> Result<Self> {
+        Self::builder().bind(addr).build().await
+    }
 
-        let socket = bind_ephemeral_udp_socket(target)
-            .await
-            .map_err(|e| Error::Io {
-                target: Some(target),
-                source: e,
-            })?;
+    /// Create a builder for custom configuration.
+    pub fn builder() -> UdpTransportBuilder {
+        UdpTransportBuilder::new()
+    }
 
-        socket.connect(target).await.map_err(|e| Error::Io {
-            target: Some(target),
+    /// Create a handle for a specific target.
+    ///
+    /// Handles implement [`Transport`] and can be used with [`Client`](crate::Client).
+    pub fn handle(&self, target: SocketAddr) -> UdpHandle {
+        UdpHandle {
+            inner: self.inner.clone(),
+            target,
+        }
+    }
+
+    /// Get the local bind address.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.inner.local_addr
+    }
+
+    /// Shutdown the transport, stopping the background receiver.
+    ///
+    /// Pending requests will fail with timeout errors.
+    pub fn shutdown(&self) {
+        self.inner.shutdown.cancel();
+    }
+
+    fn start_recv_loop(inner: Arc<UdpTransportInner>) {
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; UDP_RECV_BUFFER_SIZE];
+            let mut cleanup_interval = tokio::time::interval(Duration::from_secs(1));
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = inner.shutdown.cancelled() => {
+                        tracing::debug!(
+                            snmp.local_addr = %inner.local_addr,
+                            "UDP transport shutdown"
+                        );
+                        break;
+                    }
+
+                    _ = cleanup_interval.tick() => {
+                        inner.core.cleanup_expired();
+                    }
+
+                    result = inner.socket.recv_from(&mut buf) => {
+                        match result {
+                            Ok((len, source)) => {
+                                let data = Bytes::copy_from_slice(&buf[..len]);
+
+                                if let Some(request_id) = extract_request_id(&data) {
+                                    if !inner.core.deliver(request_id, data, source) {
+                                        tracing::debug!(
+                                            snmp.request_id = request_id,
+                                            snmp.source = %source,
+                                            "response for unknown request"
+                                        );
+                                    }
+                                } else {
+                                    tracing::debug!(
+                                        snmp.source = %source,
+                                        snmp.bytes = len,
+                                        "malformed response (no request_id)"
+                                    );
+                                }
+                            }
+                            Err(e) if inner.shutdown.is_cancelled() => break,
+                            Err(e) => {
+                                tracing::error!(error = %e, "UDP recv error");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Builder for [`UdpTransport`].
+pub struct UdpTransportBuilder {
+    bind_addr: String,
+    config: UdpTransportConfig,
+}
+
+impl UdpTransportBuilder {
+    /// Create a new builder with default settings.
+    ///
+    /// Default bind address is `[::]:0` for dual-stack support.
+    pub fn new() -> Self {
+        Self {
+            bind_addr: "[::]:0".into(),
+            config: UdpTransportConfig::default(),
+        }
+    }
+
+    /// Set the local bind address.
+    pub fn bind(mut self, addr: impl AsRef<str>) -> Self {
+        self.bind_addr = addr.as_ref().to_string();
+        self
+    }
+
+    /// Set maximum message size for sending (default: 1472 bytes).
+    ///
+    /// This affects the advertised msgMaxSize in SNMPv3 requests. The receive
+    /// buffer is always sized to accept any valid UDP datagram (65535 bytes).
+    pub fn max_message_size(mut self, size: usize) -> Self {
+        self.config.max_message_size = size;
+        self
+    }
+
+    /// Configure warning on source address mismatch (default: true).
+    pub fn warn_on_source_mismatch(mut self, warn: bool) -> Self {
+        self.config.warn_on_source_mismatch = warn;
+        self
+    }
+
+    /// Build the transport.
+    pub async fn build(self) -> Result<UdpTransport> {
+        let bind_addr: SocketAddr = self.bind_addr.parse().map_err(|_| Error::Io {
+            target: None,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid bind address: {}", self.bind_addr),
+            ),
+        })?;
+
+        let socket = bind_udp_socket(bind_addr).await.map_err(|e| Error::Io {
+            target: Some(bind_addr),
             source: e,
         })?;
 
         let local_addr = socket.local_addr().map_err(|e| Error::Io {
-            target: Some(target),
+            target: Some(bind_addr),
             source: e,
         })?;
 
         tracing::debug!(
-            snmp.target = %target,
             snmp.local_addr = %local_addr,
-            "UDP transport connected"
+            "UDP transport bound"
         );
 
-        Ok(Self {
-            inner: Arc::new(UdpTransportInner {
-                socket,
-                target,
-                local_addr,
-                pending: Mutex::new(HashMap::new()),
-            }),
-        })
-    }
+        let inner = Arc::new(UdpTransportInner {
+            socket,
+            local_addr,
+            core: UdpCore::new(),
+            config: self.config,
+            shutdown: CancellationToken::new(),
+        });
 
-    /// Connect with a timeout.
-    ///
-    /// Creates an ephemeral UDP socket bound to the appropriate address family,
-    /// with a timeout for the bind and connect operations.
-    /// For IPv6 targets, the socket has `IPV6_V6ONLY` set to true.
-    pub async fn connect_timeout(target: SocketAddr, connect_timeout: Duration) -> Result<Self> {
-        let result = timeout(connect_timeout, Self::connect(target)).await;
+        UdpTransport::start_recv_loop(inner.clone());
 
-        match result {
-            Ok(inner) => inner,
-            Err(_) => Err(Error::Timeout {
-                target: Some(target),
-                elapsed: connect_timeout,
-                request_id: 0,
-                retries: 0,
-            }),
-        }
+        Ok(UdpTransport { inner })
     }
 }
 
-impl Transport for UdpTransport {
+impl Default for UdpTransportBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Handle to a UDP transport for a specific target.
+///
+/// Implements [`Transport`] and can be used with [`Client`](crate::Client).
+/// Cheap to clone (Arc + SocketAddr).
+#[derive(Clone)]
+pub struct UdpHandle {
+    inner: Arc<UdpTransportInner>,
+    target: SocketAddr,
+}
+
+impl Transport for UdpHandle {
     async fn send(&self, data: &[u8]) -> Result<()> {
         tracing::trace!(
-            snmp.target = %self.inner.target,
+            snmp.target = %self.target,
             snmp.bytes = data.len(),
             "UDP send"
         );
-        self.inner.socket.send(data).await.map_err(|e| Error::Io {
-            target: Some(self.inner.target),
-            source: e,
-        })?;
+        self.inner
+            .socket
+            .send_to(data, self.target)
+            .await
+            .map_err(|e| Error::Io {
+                target: Some(self.target),
+                source: e,
+            })?;
         Ok(())
     }
 
-    async fn recv(&self, request_id: i32, recv_timeout: Duration) -> Result<(Bytes, SocketAddr)> {
+    async fn recv(&self, request_id: i32) -> Result<(Bytes, SocketAddr)> {
         tracing::trace!(
-            snmp.target = %self.inner.target,
+            snmp.target = %self.target,
             snmp.request_id = request_id,
-            snmp.timeout_ms = recv_timeout.as_millis() as u64,
             "UDP recv waiting"
         );
 
-        let deadline = Instant::now() + recv_timeout;
+        let result = self
+            .inner
+            .core
+            .wait_for_response(request_id, self.target)
+            .await;
 
-        loop {
-            // Check pending buffer first
-            {
-                let mut pending = self.inner.pending.lock().unwrap();
-                if let Some(data) = pending.remove(&request_id) {
-                    tracing::trace!(
-                        snmp.target = %self.inner.target,
+        match &result {
+            Ok((data, source)) => {
+                // Warn on source mismatch
+                if self.inner.config.warn_on_source_mismatch && *source != self.target {
+                    tracing::warn!(
                         snmp.request_id = request_id,
-                        snmp.bytes = data.len(),
-                        "UDP recv from pending buffer"
+                        snmp.target = %self.target,
+                        snmp.source = %source,
+                        "response source address mismatch"
                     );
-                    return Ok((data, self.inner.target));
                 }
-            }
-
-            // Calculate remaining time
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
                 tracing::trace!(
-                    snmp.target = %self.inner.target,
-                    snmp.request_id = request_id,
-                    "UDP recv timeout"
+                    snmp.target = %self.target,
+                    snmp.source = %source,
+                    snmp.bytes = data.len(),
+                    "UDP recv complete"
                 );
-                return Err(Error::Timeout {
-                    target: Some(self.inner.target),
-                    elapsed: recv_timeout,
-                    request_id,
-                    retries: 0,
-                });
             }
-
-            // Try to receive from socket
-            let mut buf = vec![0u8; 65535];
-            let result = timeout(remaining, self.inner.socket.recv(&mut buf)).await;
-
-            match result {
-                Ok(Ok(len)) => {
-                    buf.truncate(len);
-                    let data = Bytes::from(buf);
-
-                    // Extract request_id from response
-                    if let Some(recv_id) = extract_request_id(&data) {
-                        if recv_id == request_id {
-                            tracing::trace!(
-                                snmp.target = %self.inner.target,
-                                snmp.request_id = request_id,
-                                snmp.bytes = len,
-                                "UDP recv complete"
-                            );
-                            return Ok((data, self.inner.target));
-                        } else {
-                            // Buffer for another caller
-                            tracing::trace!(
-                                snmp.target = %self.inner.target,
-                                snmp.expected_id = request_id,
-                                snmp.received_id = recv_id,
-                                snmp.bytes = len,
-                                "UDP recv buffered for different request"
-                            );
-                            let mut pending = self.inner.pending.lock().unwrap();
-                            pending.insert(recv_id, data);
-                            // Continue loop to try again
-                        }
-                    } else {
-                        // Could not extract request_id (malformed packet)
-                        // Log and continue to try again
-                        tracing::warn!(
-                            snmp.target = %self.inner.target,
-                            snmp.bytes = len,
-                            "UDP recv could not extract request_id, discarding"
-                        );
-                    }
-                }
-                Ok(Err(e)) => {
-                    tracing::trace!(
-                        snmp.target = %self.inner.target,
-                        error = %e,
-                        "UDP recv error"
-                    );
-                    return Err(Error::Io {
-                        target: Some(self.inner.target),
-                        source: e,
-                    });
-                }
-                Err(_) => {
-                    tracing::trace!(
-                        snmp.target = %self.inner.target,
-                        snmp.request_id = request_id,
-                        "UDP recv timeout"
-                    );
-                    return Err(Error::Timeout {
-                        target: Some(self.inner.target),
-                        elapsed: recv_timeout,
-                        request_id,
-                        retries: 0,
-                    });
-                }
+            Err(_) => {
+                tracing::trace!(
+                    snmp.target = %self.target,
+                    snmp.request_id = request_id,
+                    "UDP recv failed"
+                );
             }
         }
+
+        result
     }
 
     fn peer_addr(&self) -> SocketAddr {
-        self.inner.target
+        self.target
     }
 
     fn local_addr(&self) -> SocketAddr {
         self.inner.local_addr
     }
 
-    fn is_stream(&self) -> bool {
+    fn is_reliable(&self) -> bool {
         false
+    }
+
+    fn register_request(&self, request_id: i32, timeout: Duration) {
+        self.inner.core.register(request_id, timeout);
     }
 }

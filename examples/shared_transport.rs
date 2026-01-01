@@ -1,13 +1,12 @@
 //! Shared Transport for High-Throughput Polling
 //!
-//! This example demonstrates using SharedUdpTransport for polling many
-//! targets efficiently. Instead of one socket per target (which hits OS
-//! limits around 1000-10000 sockets), a single socket is shared across all
-//! clients using request-ID correlation.
+//! This example demonstrates using a shared UdpTransport for polling many
+//! targets efficiently. A single UDP socket is shared across all clients
+//! using request-ID correlation, reducing file descriptor usage.
 //!
 //! Key concepts:
-//! - SharedUdpTransport: A single UDP socket shared across many clients
-//! - SharedUdpHandle: Per-target handle implementing Transport trait
+//! - UdpTransport: A single UDP socket that provides per-target handles
+//! - UdpHandle: Per-target handle implementing Transport trait
 //! - Request ID correlation: Responses are matched to requests by ID
 //! - Engine cache: Share SNMPv3 engine discovery across clients
 //!
@@ -17,9 +16,9 @@
 //!   docker build -t async-snmp-test:latest tests/containers/snmpd/
 //!   docker run -d -p 11161:161/udp async-snmp-test:latest
 
+use async_snmp::transport::UdpTransport;
 use async_snmp::{
-    Auth, AuthProtocol, Client, ClientConfig, EngineCache, MasterKeys, PrivProtocol, Retry,
-    SharedUdpTransport, oid,
+    Auth, AuthProtocol, Client, ClientConfig, EngineCache, MasterKeys, PrivProtocol, Retry, oid,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::net::SocketAddr;
@@ -43,11 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     println!("--- Basic Shared Transport ---\n");
 
-    // Create a shared transport bound to an ephemeral port
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
-        .build()
-        .await?;
+    // Create a shared transport bound to an ephemeral port.
+    // Using [::]:0 creates a dual-stack socket that handles both IPv4 and IPv6.
+    let shared = UdpTransport::bind("[::]:0").await?;
 
     println!("Shared transport bound to {}", shared.local_addr());
 
@@ -73,10 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Concurrent Polling ---\n");
 
     // Poll multiple OIDs concurrently through the same shared transport
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
-        .build()
-        .await?;
+    let shared = UdpTransport::bind("[::]:0").await?;
 
     let oids = [
         oid!(1, 3, 6, 1, 2, 1, 1, 1, 0), // sysDescr
@@ -131,10 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Master keys derived (one-time cost)");
     println!("Engine cache created for sharing\n");
 
-    let shared_v3 = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
-        .build()
-        .await?;
+    let shared_v3 = UdpTransport::bind("[::]:0").await?;
 
     // Poll multiple OIDs using V3 with shared resources
     let v3_oids = [
@@ -174,10 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "192.0.2.2:161".parse()?, // TEST-NET-1 (unreachable)
     ];
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
-        .build()
-        .await?;
+    let shared = UdpTransport::bind("[::]:0").await?;
 
     let config = ClientConfig {
         timeout: Duration::from_millis(500),

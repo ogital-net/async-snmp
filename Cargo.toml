@@ -1,6 +1,6 @@
 [package]
 name = "async-snmp"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Modern async-first SNMP client library for Rust"
@@ -22,6 +22,7 @@ smallvec = "1.15.1"
 socket2 = { version = "0.6", features = ["all"] }
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["net", "time", "sync", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio-util = "0.7"
 tracing = "0.1.44"
 
 # CLI dependencies (optional)

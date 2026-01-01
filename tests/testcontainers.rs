@@ -23,7 +23,7 @@ use std::net::SocketAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_snmp::{Auth, Client, Retry, SharedUdpTransport, Transport, Value, oid};
+use async_snmp::{Auth, Client, Retry, Transport, UdpTransport, Value, oid};
 use common::{AUTH_PASSWORD, COMMUNITY_RW, PRIV_PASSWORD, parse_image, snmpd_image, users};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
@@ -199,18 +199,19 @@ async fn get_snmpd_container() -> &'static ContainerInfo {
         .await
 }
 
-// Backward compatibility aliases
-async fn get_v2c_container() -> &'static ContainerInfo {
-    get_snmpd_container().await
-}
-
-async fn get_v3_container() -> &'static ContainerInfo {
-    get_snmpd_container().await
+/// Parse target address from container info (handles IPv6 bracketing).
+fn parse_target(info: &ContainerInfo) -> SocketAddr {
+    use std::net::ToSocketAddrs;
+    format!("{}:{}", info.host, info.udp_port)
+        .to_socket_addrs()
+        .expect("Failed to resolve target")
+        .next()
+        .expect("No addresses resolved")
 }
 
 /// Create a v2c client connected to the shared container (UDP)
 async fn create_v2c_client() -> Client {
-    let info = get_v2c_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     Client::builder(&target, Auth::v2c("public"))
@@ -411,7 +412,7 @@ async fn test_nonexistent_oid() {
 async fn test_get_many_batching() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     // Create client with small max_oids_per_request to force batching
@@ -473,11 +474,11 @@ async fn test_get_many_empty() {
 async fn test_shared_transport_single_client() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -502,11 +503,11 @@ async fn test_shared_transport_single_client() {
 async fn test_shared_transport_multiple_clients() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -541,11 +542,11 @@ async fn test_shared_transport_multiple_clients() {
 async fn test_shared_transport_walk() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -571,7 +572,7 @@ async fn test_shared_transport_walk() {
     );
 }
 
-/// Test that SharedUdpTransport uses a single socket for all handles.
+/// Test that UdpTransport uses a single socket for all handles.
 ///
 /// This verifies the FD efficiency benefit: N clients share 1 socket instead of N sockets.
 /// We verify this by checking that all handles report the same local address.
@@ -579,11 +580,11 @@ async fn test_shared_transport_walk() {
 async fn test_shared_transport_fd_efficiency() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -628,7 +629,7 @@ async fn test_shared_transport_fd_efficiency() {
     );
 }
 
-/// Test concurrent request correctness with SharedUdpTransport.
+/// Test concurrent request correctness with UdpTransport.
 ///
 /// Fires many concurrent requests through a shared transport and verifies
 /// that request-ID correlation correctly routes responses to the right callers.
@@ -638,11 +639,11 @@ async fn test_shared_transport_fd_efficiency() {
 async fn test_shared_transport_concurrent_correctness() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -689,7 +690,7 @@ async fn test_shared_transport_concurrent_correctness() {
     assert_eq!(success_count, clients.len());
 }
 
-/// Test that SharedUdpTransport handles high concurrency with different OIDs.
+/// Test that UdpTransport handles high concurrency with different OIDs.
 ///
 /// Each client requests a different OID to ensure responses are correctly
 /// correlated even when the response content differs.
@@ -697,11 +698,11 @@ async fn test_shared_transport_concurrent_correctness() {
 async fn test_shared_transport_concurrent_different_oids() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -763,11 +764,11 @@ async fn test_shared_transport_concurrent_different_oids() {
 async fn test_shared_transport_client_drop_isolation() {
     require_container_runtime!();
 
-    let info = get_v2c_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -826,7 +827,7 @@ use std::sync::Arc;
 /// Create a v3 client with authPriv security level (SHA-1/AES-128)
 /// Uses privaes128_user from our custom container.
 async fn create_v3_client() -> Client {
-    let info = get_v3_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     Client::builder(
@@ -904,7 +905,7 @@ async fn test_v3_walk() {
 async fn test_v3_shared_engine_cache() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     // Create a shared engine cache
@@ -960,7 +961,7 @@ async fn test_v3_shared_engine_cache() {
 async fn test_v3_wrong_auth_password() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     // Use wrong auth password - should fail
@@ -1013,7 +1014,7 @@ async fn test_v3_wrong_auth_password() {
 async fn test_v3_wrong_priv_password() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     // Use correct auth but wrong priv password - should fail
@@ -1063,7 +1064,7 @@ async fn test_v3_wrong_priv_password() {
 async fn test_v3_unknown_user() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     // Use non-existent username
@@ -1104,7 +1105,7 @@ async fn test_v3_unknown_user() {
 async fn test_v3_wrong_auth_protocol() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
+    let info = get_snmpd_container().await;
     let target = format!("{}:{}", info.host, info.udp_port);
 
     // privaes128_user is configured with SHA-1, try with MD5
@@ -1907,13 +1908,13 @@ async fn test_udp_transport_high_concurrency() {
 }
 
 // ============================================================================
-// SharedUdpTransport V3 Extraction Tests
+// UdpTransport V3 Extraction Tests
 // ============================================================================
 //
-// These tests validate that SharedUdpTransport correctly extracts msgID from
+// These tests validate that UdpTransport correctly extracts msgID from
 // SNMPv3 messages for response correlation.
 
-/// Test concurrent V3 requests through SharedUdpTransport.
+/// Test concurrent V3 requests through UdpTransport.
 ///
 /// This tests that the extract_request_id function correctly handles V3
 /// messages where msgID is in msgGlobalData (SEQUENCE) rather than after
@@ -1922,11 +1923,11 @@ async fn test_udp_transport_high_concurrency() {
 async fn test_shared_transport_v3_concurrent() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");
@@ -1987,7 +1988,7 @@ async fn test_shared_transport_v3_concurrent() {
     );
 }
 
-/// Test concurrent V3 requests with different OIDs through SharedUdpTransport.
+/// Test concurrent V3 requests with different OIDs through UdpTransport.
 ///
 /// Each client requests a different OID to ensure responses are correctly
 /// correlated even when the response content differs.
@@ -1995,11 +1996,11 @@ async fn test_shared_transport_v3_concurrent() {
 async fn test_shared_transport_v3_concurrent_different_oids() {
     require_container_runtime!();
 
-    let info = get_v3_container().await;
-    let target: SocketAddr = format!("127.0.0.1:{}", info.udp_port).parse().unwrap();
+    let info = get_snmpd_container().await;
+    let target = parse_target(info);
 
-    let shared = SharedUdpTransport::builder()
-        .bind("0.0.0.0:0")
+    let shared = UdpTransport::builder()
+        .bind("[::]:0")
         .build()
         .await
         .expect("Failed to bind shared transport");

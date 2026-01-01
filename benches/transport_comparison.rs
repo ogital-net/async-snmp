@@ -1,7 +1,8 @@
-//! Transport comparison benchmark: SharedUdpTransport vs UdpTransport
+//! Transport comparison benchmark: per-client vs shared UdpTransport
 //!
-//! This benchmark compares performance characteristics between shared and non-shared
-//! UDP transports when polling multiple SNMP targets.
+//! This benchmark compares performance characteristics between two usage patterns:
+//! - Per-client: Each client creates its own UdpTransport via `.connect()`
+//! - Shared: Multiple clients share a single UdpTransport via handles
 //!
 //! Metrics measured:
 //! - Throughput (requests/sec)
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use async_snmp::{Auth, Client, Retry, SharedUdpTransport, oid};
+use async_snmp::{Auth, Client, Retry, UdpHandle, UdpTransport, oid};
 use futures::future::join_all;
 use hdrhistogram::Histogram;
 use testcontainers::core::{IntoContainerPort, WaitFor};
@@ -95,8 +96,8 @@ async fn run_comparison(num_containers: usize, concurrency_per_target: usize) {
     // Get baseline FD count
     let baseline_fds = count_fds();
 
-    // Warmup and benchmark non-shared transport
-    println!("\n[Non-Shared Transport (UdpTransport)]");
+    // Warmup and benchmark per-client transport
+    println!("\n[Per-Client Transport (implicit UdpTransport per client)]");
     let non_shared_result = benchmark_non_shared(&targets, concurrency_per_target).await;
 
     let non_shared_fds = count_fds();
@@ -113,7 +114,7 @@ async fn run_comparison(num_containers: usize, concurrency_per_target: usize) {
     println!("  FDs after cleanup: {}", after_non_shared_fds);
 
     // Warmup and benchmark shared transport
-    println!("\n[Shared Transport (SharedUdpTransport)]");
+    println!("\n[Shared Transport (explicit UdpTransport with handles)]");
     let shared_result = benchmark_shared(&targets, concurrency_per_target).await;
 
     let shared_fds = count_fds();
@@ -128,12 +129,12 @@ async fn run_comparison(num_containers: usize, concurrency_per_target: usize) {
 
     println!("\n  FD Usage:");
     println!(
-        "    Non-shared: {} FDs ({} per target)",
+        "    Per-client: {} FDs ({} per target)",
         non_shared_fds - baseline_fds,
         (non_shared_fds - baseline_fds) / targets.len().max(1)
     );
     println!(
-        "    Shared:     {} FDs (1 socket for all)",
+        "    Shared:     {} FDs (1 socket for all targets)",
         shared_fds - baseline_fds
     );
 
@@ -170,7 +171,7 @@ async fn benchmark_non_shared(
     targets: &[SocketAddr],
     concurrency: usize,
 ) -> BenchmarkResult<Client> {
-    // Create one client per target (each with its own socket)
+    // Create one client per target (each creates its own UdpTransport via .connect())
     let mut clients = Vec::with_capacity(targets.len());
     for target in targets {
         let client = Client::builder(target.to_string(), Auth::v2c(COMMUNITY))
@@ -199,9 +200,9 @@ async fn benchmark_non_shared(
 async fn benchmark_shared(
     targets: &[SocketAddr],
     concurrency: usize,
-) -> BenchmarkResult<Client<async_snmp::SharedUdpHandle>> {
+) -> BenchmarkResult<Client<UdpHandle>> {
     // Create shared transport
-    let shared = SharedUdpTransport::builder()
+    let shared = UdpTransport::builder()
         .bind("0.0.0.0:0")
         .build()
         .await
@@ -342,17 +343,17 @@ async fn run_benchmark<T: async_snmp::Transport + 'static>(
     }
 }
 
-fn print_comparison(non_shared: &BenchmarkStats, shared: &BenchmarkStats) {
-    let throughput_ratio = shared.requests_per_sec() / non_shared.requests_per_sec().max(0.001);
-    let p50_ratio = non_shared.p50_us as f64 / shared.p50_us.max(1) as f64;
-    let p99_ratio = non_shared.p99_us as f64 / shared.p99_us.max(1) as f64;
+fn print_comparison(per_client: &BenchmarkStats, shared: &BenchmarkStats) {
+    let throughput_ratio = shared.requests_per_sec() / per_client.requests_per_sec().max(0.001);
+    let p50_ratio = per_client.p50_us as f64 / shared.p50_us.max(1) as f64;
+    let p99_ratio = per_client.p99_us as f64 / shared.p99_us.max(1) as f64;
 
     println!(
-        "  Throughput: shared is {:.2}x vs non-shared",
+        "  Throughput: shared is {:.2}x vs per-client",
         throughput_ratio
     );
     println!(
-        "  p50 Latency: shared is {:.2}x {} than non-shared",
+        "  p50 Latency: shared is {:.2}x {} than per-client",
         if p50_ratio > 1.0 {
             p50_ratio
         } else {
@@ -361,7 +362,7 @@ fn print_comparison(non_shared: &BenchmarkStats, shared: &BenchmarkStats) {
         if p50_ratio > 1.0 { "faster" } else { "slower" }
     );
     println!(
-        "  p99 Latency: shared is {:.2}x {} than non-shared",
+        "  p99 Latency: shared is {:.2}x {} than per-client",
         if p99_ratio > 1.0 {
             p99_ratio
         } else {
