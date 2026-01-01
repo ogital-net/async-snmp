@@ -32,12 +32,28 @@ pub enum WalkMode {
 }
 
 /// OID ordering behavior during walk operations.
+///
+/// SNMP walks rely on agents returning OIDs in strictly increasing
+/// lexicographic order. However, some buggy agents violate this requirement,
+/// returning OIDs out of order or even repeating OIDs (which would cause
+/// infinite loops).
+///
+/// This enum controls how the library handles ordering violations:
+///
+/// - [`Strict`](Self::Strict) (default): Terminates immediately with
+///   [`Error::NonIncreasingOid`](crate::Error::NonIncreasingOid) on any violation.
+///   Use this unless you know the agent has ordering bugs.
+///
+/// - [`AllowNonIncreasing`](Self::AllowNonIncreasing): Tolerates out-of-order
+///   OIDs but tracks all seen OIDs to detect cycles. Returns
+///   [`Error::DuplicateOid`](crate::Error::DuplicateOid) if the same OID appears twice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OidOrdering {
     /// Require strictly increasing OIDs (default).
-    /// Walk terminates with error on first violation.
-    /// Most efficient: O(1) memory, O(1) per-item check.
+    ///
+    /// Walk terminates with [`Error::NonIncreasingOid`](crate::Error::NonIncreasingOid)
+    /// on first violation. Most efficient: O(1) memory, O(1) per-item check.
     #[default]
     Strict,
 
