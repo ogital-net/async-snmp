@@ -240,6 +240,51 @@
 //! # Trace a specific module
 //! RUST_LOG=async_snmp::client=trace cargo run
 //! ```
+//!
+//! ## Agent Compatibility
+//!
+//! Real-world SNMP agents often have quirks. This library provides several
+//! options to handle non-conformant implementations.
+//!
+//! ### Walk Issues
+//!
+//! | Problem | Solution |
+//! |---------|----------|
+//! | GETBULK returns errors or garbage | Use [`WalkMode::GetNext`] |
+//! | OIDs returned out of order | Use [`OidOrdering::AllowNonIncreasing`] |
+//! | Walk never terminates | Set [`ClientBuilder::max_walk_results`] |
+//! | Slow responses cause timeouts | Reduce [`ClientBuilder::max_repetitions`] |
+//!
+//! ```rust,no_run
+//! use async_snmp::{Auth, Client, WalkMode, OidOrdering};
+//!
+//! # async fn example() -> async_snmp::Result<()> {
+//! // Configure for a problematic agent
+//! let client = Client::builder("192.168.1.1:161", Auth::v2c("public"))
+//!     .walk_mode(WalkMode::GetNext)           // Avoid buggy GETBULK
+//!     .oid_ordering(OidOrdering::AllowNonIncreasing)  // Handle out-of-order OIDs
+//!     .max_walk_results(10_000)               // Prevent runaway walks
+//!     .max_repetitions(10)                    // Smaller responses
+//!     .connect()
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ### Permissive Parsing
+//!
+//! The BER decoder accepts non-conformant encodings that some agents produce:
+//! - Non-minimal integer encodings (extra leading bytes)
+//! - Non-minimal OID subidentifier encodings
+//! - Truncated values (logged as warnings)
+//!
+//! This matches net-snmp's permissive behavior.
+//!
+//! ### Unknown Value Types
+//!
+//! Unrecognized BER tags are preserved as [`Value::Unknown`] rather than
+//! causing decode errors. This provides forward compatibility with new
+//! SNMP types or vendor extensions.
 
 pub mod agent;
 pub mod ber;
