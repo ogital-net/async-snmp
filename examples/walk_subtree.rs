@@ -212,6 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (2, "ifDescr"),
         (3, "ifType"),
         (5, "ifSpeed"),
+        (6, "ifPhysAddress"),
         (7, "ifAdminStatus"),
         (8, "ifOperStatus"),
     ];
@@ -221,6 +222,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  {} ({} entries)", col_name, entries.len());
         }
     }
+
+    // =========================================================================
+    // Example 9: Formatting values with DISPLAY-HINT
+    // =========================================================================
+    println!("\n--- Formatting with DISPLAY-HINT ---\n");
+
+    // The format module provides RFC 2579 DISPLAY-HINT formatting.
+    // This is useful for formatting MAC addresses, structured strings, etc.
+
+    // ifPhysAddress (column 6) contains MAC addresses as raw bytes
+    if let Some(mac_entries) = columns.get(&6) {
+        println!("MAC addresses (formatted with DISPLAY-HINT '1x:'):");
+        for vb in mac_entries.iter().take(5) {
+            // Value::format_with_hint applies RFC 2579 formatting
+            // "1x:" means: 1 byte, hex format, colon separator
+            if let Some(formatted) = vb.value.format_with_hint("1x:") {
+                println!("  {}: {}", vb.oid, formatted);
+            } else {
+                // format_with_hint returns None for non-OctetString values
+                println!("  {}: {:?} (raw)", vb.oid, vb.value);
+            }
+        }
+    }
+
+    // You can also use the format module directly for more control
+    use async_snmp::format::{display_hint, hex};
+
+    println!("\nDirect format module usage:");
+
+    // Format bytes as a MAC address
+    let mac_bytes = [0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e];
+    println!("  MAC (1x:): {}", display_hint::apply("1x:", &mac_bytes));
+
+    // Format bytes as an IPv4 address
+    let ip_bytes = [192, 168, 1, 1];
+    println!("  IPv4 (1d.): {}", display_hint::apply("1d.", &ip_bytes));
+
+    // Hex encoding for binary data (useful for engine IDs, etc.)
+    let engine_id = [0x80, 0x00, 0x1f, 0x88, 0x04];
+    println!("  Engine ID (hex): {}", hex::encode(&engine_id));
+
+    // Lazy hex formatting for logging (avoids allocation if log level disabled)
+    println!("  Lazy hex: {}", hex::Bytes(&engine_id));
 
     println!("\nExample complete!");
     Ok(())
