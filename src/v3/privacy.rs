@@ -25,6 +25,21 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::{AuthProtocol, PrivProtocol};
 use crate::error::{CryptoErrorKind, Error, Result};
 
+/// Generate a random non-zero u64 for salt initialization.
+///
+/// Uses the OS cryptographic random source via `getrandom`.
+fn random_nonzero_u64() -> u64 {
+    let mut buf = [0u8; 8];
+    loop {
+        getrandom::fill(&mut buf).expect("getrandom failed");
+        let val = u64::from_ne_bytes(buf);
+        if val != 0 {
+            return val;
+        }
+        // Extremely unlikely (1 in 2^64), but loop if we got zero
+    }
+}
+
 /// Privacy key for encryption/decryption operations.
 ///
 /// Derives encryption keys from a password and engine ID using the same
@@ -53,19 +68,30 @@ pub struct PrivKey {
 pub struct SaltCounter(AtomicU64);
 
 impl SaltCounter {
-    /// Create a new salt counter initialized to a pseudo-random value.
+    /// Create a new salt counter initialized from cryptographic randomness.
     pub fn new() -> Self {
-        // Initialize with current time for pseudo-randomness
-        let init = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        Self(AtomicU64::new(init))
+        Self(AtomicU64::new(random_nonzero_u64()))
+    }
+
+    /// Create a salt counter initialized to a specific value.
+    ///
+    /// This is primarily for testing purposes.
+    pub fn from_value(value: u64) -> Self {
+        Self(AtomicU64::new(value))
     }
 
     /// Get the next salt value and increment the counter.
+    ///
+    /// This method never returns zero. Per net-snmp behavior, zero is skipped
+    /// on wraparound to avoid potential IV reuse issues.
     pub fn next(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::SeqCst)
+        let val = self.0.fetch_add(1, Ordering::SeqCst);
+        // Skip zero on wraparound (matches net-snmp behavior)
+        if val == 0 {
+            self.0.fetch_add(1, Ordering::SeqCst)
+        } else {
+            val
+        }
     }
 }
 
@@ -207,12 +233,11 @@ impl PrivKey {
         }
     }
 
-    /// Initialize salt with pseudo-random value.
+    /// Initialize salt from cryptographic randomness.
+    ///
+    /// Never returns zero to avoid IV reuse issues on wraparound.
     fn init_salt() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
+        random_nonzero_u64()
     }
 
     /// Get the privacy protocol.
@@ -249,8 +274,13 @@ impl PrivKey {
         salt_counter: Option<&SaltCounter>,
     ) -> Result<(Bytes, Bytes)> {
         let salt = salt_counter.map(|c| c.next()).unwrap_or_else(|| {
-            let s = self.salt_counter;
+            let mut s = self.salt_counter;
             self.salt_counter = self.salt_counter.wrapping_add(1);
+            // Skip zero on wraparound (matches net-snmp behavior)
+            if s == 0 {
+                s = self.salt_counter;
+                self.salt_counter = self.salt_counter.wrapping_add(1);
+            }
             s
         });
 
@@ -632,6 +662,62 @@ mod tests {
         // Each call should increment
         assert_eq!(s2, s1.wrapping_add(1));
         assert_eq!(s3, s2.wrapping_add(1));
+    }
+
+    /// Test that SaltCounter never returns zero.
+    ///
+    /// Per net-snmp behavior (snmpusm.c:1319-1320), zero salt values should be
+    /// skipped to avoid potential IV reuse issues on wraparound.
+    #[test]
+    fn test_salt_counter_skips_zero() {
+        // Create a counter initialized to u64::MAX
+        let counter = SaltCounter::from_value(u64::MAX);
+
+        // First call returns u64::MAX
+        let s1 = counter.next();
+        assert_eq!(s1, u64::MAX);
+
+        // Second call would normally return 0 (wraparound), but should skip to 1
+        let s2 = counter.next();
+        assert_ne!(s2, 0, "SaltCounter should never return zero");
+        assert_eq!(s2, 1, "SaltCounter should skip 0 and return 1");
+
+        // Subsequent calls should continue normally
+        let s3 = counter.next();
+        assert_eq!(s3, 2);
+    }
+
+    /// Test that PrivKey's internal salt counter never produces zero.
+    ///
+    /// When using the internal counter (not a shared SaltCounter), the salt
+    /// should also skip zero on wraparound.
+    #[test]
+    fn test_priv_key_internal_salt_skips_zero() {
+        let key = vec![0u8; 16];
+        let mut priv_key = PrivKey::from_bytes(PrivProtocol::Aes128, key);
+
+        // Set the internal counter to u64::MAX
+        priv_key.salt_counter = u64::MAX;
+
+        let plaintext = b"test";
+
+        // First encryption uses u64::MAX
+        let (_, salt1) = priv_key.encrypt(plaintext, 0, 0, None).unwrap();
+        assert_eq!(
+            u64::from_be_bytes(salt1.as_ref().try_into().unwrap()),
+            u64::MAX
+        );
+
+        // Second encryption should skip 0 and use 1
+        let (_, salt2) = priv_key.encrypt(plaintext, 0, 0, None).unwrap();
+        let salt2_value = u64::from_be_bytes(salt2.as_ref().try_into().unwrap());
+        assert_ne!(salt2_value, 0, "Salt should never be zero");
+        assert_eq!(salt2_value, 1, "Salt should skip 0 and be 1");
+
+        // Third encryption should use 2
+        let (_, salt3) = priv_key.encrypt(plaintext, 0, 0, None).unwrap();
+        let salt3_value = u64::from_be_bytes(salt3.as_ref().try_into().unwrap());
+        assert_eq!(salt3_value, 2);
     }
 
     #[test]
