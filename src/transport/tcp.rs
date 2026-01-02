@@ -85,7 +85,138 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::timeout;
 
 /// Maximum SNMP message size for TCP (per RFC 3430).
+///
+/// This is the protocol-level maximum used for msgMaxSize advertisement.
 const MAX_TCP_MESSAGE_SIZE: usize = 0x7fffffff;
+
+/// Default allocation limit for incoming TCP messages.
+///
+/// While the protocol allows messages up to 2GB, we impose a practical limit
+/// to prevent denial-of-service attacks where a malicious sender claims an
+/// enormous message size. This limit is checked before allocating any buffers.
+///
+/// 10MB is generous for SNMP - even large table walks rarely exceed a few MB.
+/// Real-world SNMP messages typically range from a few hundred bytes to a few KB.
+const DEFAULT_MAX_ALLOCATION_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+
+/// Configuration options for [`TcpTransport`].
+///
+/// For advanced TCP socket configuration (TCP_NODELAY, keepalive, buffer sizes,
+/// etc.), use [`TcpTransport::from_stream()`] with a pre-configured `TcpStream`.
+#[derive(Debug, Clone)]
+pub struct TcpOptions {
+    /// Maximum size of incoming messages to accept.
+    ///
+    /// Messages claiming to be larger than this are rejected before allocating
+    /// any buffers, preventing denial-of-service attacks.
+    ///
+    /// Default: 10MB. Real SNMP messages rarely exceed a few KB.
+    pub max_allocation_size: usize,
+}
+
+impl Default for TcpOptions {
+    fn default() -> Self {
+        Self {
+            max_allocation_size: DEFAULT_MAX_ALLOCATION_SIZE,
+        }
+    }
+}
+
+/// Builder for [`TcpTransport`].
+///
+/// For advanced TCP socket configuration (TCP_NODELAY, keepalive, buffer sizes,
+/// etc.), use [`TcpTransport::from_stream()`] with a pre-configured `TcpStream`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use async_snmp::transport::TcpTransport;
+/// use std::time::Duration;
+///
+/// # async fn example() -> async_snmp::Result<()> {
+/// let transport = TcpTransport::builder()
+///     .timeout(Duration::from_secs(10))
+///     .max_allocation_size(1_000_000)  // 1MB limit
+///     .connect("192.168.1.1:161".parse().unwrap())
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct TcpTransportBuilder {
+    timeout: Option<Duration>,
+    options: TcpOptions,
+}
+
+impl TcpTransportBuilder {
+    /// Create a new builder with default settings.
+    pub fn new() -> Self {
+        Self {
+            timeout: None,
+            options: TcpOptions::default(),
+        }
+    }
+
+    /// Set connection timeout.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Set maximum allocation size for incoming messages.
+    ///
+    /// Messages claiming to be larger than this are rejected before allocating
+    /// any buffers, preventing denial-of-service attacks.
+    ///
+    /// Default: 10MB.
+    pub fn max_allocation_size(mut self, size: usize) -> Self {
+        self.options.max_allocation_size = size;
+        self
+    }
+
+    /// Connect to the target address.
+    pub async fn connect(self, target: SocketAddr) -> Result<TcpTransport> {
+        let stream = match self.timeout {
+            Some(t) => timeout(t, TcpStream::connect(target))
+                .await
+                .map_err(|_| Error::Timeout {
+                    target: Some(target),
+                    elapsed: t,
+                    request_id: 0,
+                    retries: 0,
+                })?
+                .map_err(|e| Error::Io {
+                    target: Some(target),
+                    source: e,
+                })?,
+            None => TcpStream::connect(target).await.map_err(|e| Error::Io {
+                target: Some(target),
+                source: e,
+            })?,
+        };
+
+        let local_addr = stream.local_addr().map_err(|e| Error::Io {
+            target: Some(target),
+            source: e,
+        })?;
+
+        Ok(TcpTransport {
+            inner: Arc::new(TcpTransportInner {
+                stream: Arc::new(Mutex::new(stream)),
+                active_guard: std::sync::Mutex::new(None),
+                current_timeout: std::sync::Mutex::new(Duration::from_secs(30)),
+                target,
+                local_addr,
+                max_allocation_size: self.options.max_allocation_size,
+            }),
+        })
+    }
+}
+
+impl Default for TcpTransportBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// TCP transport for a single target.
 ///
@@ -142,46 +273,80 @@ struct TcpTransportInner {
     current_timeout: std::sync::Mutex<Duration>,
     target: SocketAddr,
     local_addr: SocketAddr,
+    /// Maximum allocation size for incoming messages
+    max_allocation_size: usize,
 }
 
 impl TcpTransport {
-    /// Connect to a target address.
+    /// Connect to a target address with default options.
+    ///
+    /// For custom configuration, use [`builder()`](Self::builder) or
+    /// [`from_stream()`](Self::from_stream).
     pub async fn connect(target: SocketAddr) -> Result<Self> {
-        let stream = TcpStream::connect(target).await.map_err(|e| Error::Io {
-            target: Some(target),
-            source: e,
-        })?;
-
-        let local_addr = stream.local_addr().map_err(|e| Error::Io {
-            target: Some(target),
-            source: e,
-        })?;
-
-        Ok(Self {
-            inner: Arc::new(TcpTransportInner {
-                stream: Arc::new(Mutex::new(stream)),
-                active_guard: std::sync::Mutex::new(None),
-                current_timeout: std::sync::Mutex::new(Duration::from_secs(30)),
-                target,
-                local_addr,
-            }),
-        })
+        Self::builder().connect(target).await
     }
 
     /// Connect with a timeout.
+    ///
+    /// For additional configuration, use [`builder()`](Self::builder).
     pub async fn connect_timeout(target: SocketAddr, connect_timeout: Duration) -> Result<Self> {
-        let stream = timeout(connect_timeout, TcpStream::connect(target))
+        Self::builder()
+            .timeout(connect_timeout)
+            .connect(target)
             .await
-            .map_err(|_| Error::Timeout {
-                target: Some(target),
-                elapsed: connect_timeout,
-                request_id: 0,
-                retries: 0,
-            })?
-            .map_err(|e| Error::Io {
-                target: Some(target),
-                source: e,
-            })?;
+    }
+
+    /// Create a builder for custom configuration.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use async_snmp::transport::TcpTransport;
+    /// use std::time::Duration;
+    ///
+    /// # async fn example() -> async_snmp::Result<()> {
+    /// let transport = TcpTransport::builder()
+    ///     .timeout(Duration::from_secs(10))
+    ///     .max_allocation_size(1_000_000)
+    ///     .connect("192.168.1.1:161".parse().unwrap())
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn builder() -> TcpTransportBuilder {
+        TcpTransportBuilder::new()
+    }
+
+    /// Create a transport from a pre-configured TCP socket.
+    ///
+    /// Use this when you need fine-grained control over TCP socket options
+    /// like `TCP_NODELAY`, keepalive, buffer sizes, etc.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use async_snmp::transport::{TcpTransport, TcpOptions};
+    /// use tokio::net::TcpSocket;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let socket = TcpSocket::new_v4()?;
+    /// socket.set_nodelay(true)?;
+    /// // Configure other options as needed...
+    ///
+    /// let target = "192.168.1.1:161".parse()?;
+    /// let transport = TcpTransport::from_socket(socket, target, TcpOptions::default()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn from_socket(
+        socket: tokio::net::TcpSocket,
+        target: SocketAddr,
+        options: TcpOptions,
+    ) -> Result<Self> {
+        let stream = socket.connect(target).await.map_err(|e| Error::Io {
+            target: Some(target),
+            source: e,
+        })?;
 
         let local_addr = stream.local_addr().map_err(|e| Error::Io {
             target: Some(target),
@@ -195,6 +360,7 @@ impl TcpTransport {
                 current_timeout: std::sync::Mutex::new(Duration::from_secs(30)),
                 target,
                 local_addr,
+                max_allocation_size: options.max_allocation_size,
             }),
         })
     }
@@ -251,7 +417,8 @@ impl Transport for TcpTransport {
 
         // Read a complete BER-encoded message using the framing protocol.
         // The guard is dropped when this function returns, releasing the lock.
-        let result = timeout(recv_timeout, read_ber_message(&mut stream)).await;
+        let max_alloc = self.inner.max_allocation_size;
+        let result = timeout(recv_timeout, read_ber_message(&mut stream, max_alloc)).await;
 
         match result {
             Ok(Ok(data)) => Ok((data, self.inner.target)),
@@ -288,7 +455,7 @@ impl Transport for TcpTransport {
 /// 1. Tag byte (must be 0x30)
 /// 2. Length field (definite form only)
 /// 3. Content bytes
-async fn read_ber_message(stream: &mut TcpStream) -> Result<Bytes> {
+async fn read_ber_message(stream: &mut TcpStream, max_allocation_size: usize) -> Result<Bytes> {
     let target: SocketAddr = stream
         .peer_addr()
         .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
@@ -363,11 +530,13 @@ async fn read_ber_message(stream: &mut TcpStream) -> Result<Bytes> {
         (length, all_len_bytes)
     };
 
-    // Sanity check on content length
-    if content_len > MAX_TCP_MESSAGE_SIZE {
+    // Reject excessively large claimed sizes before allocating.
+    // This prevents DoS attacks where a malicious sender claims a huge message
+    // size without actually sending that much data.
+    if content_len > max_allocation_size {
         return Err(Error::MessageTooLarge {
             size: content_len,
-            max: MAX_TCP_MESSAGE_SIZE,
+            max: max_allocation_size,
         });
     }
 
@@ -655,5 +824,114 @@ mod tests {
             0x30,
             0x00, // varbinds
         ]
+    }
+
+    /// Test that excessively large claimed message sizes are rejected early.
+    ///
+    /// A malicious client could send a BER length field claiming the message is
+    /// very large (e.g., 100MB) without actually sending that much data. Without
+    /// proper limits, the receiver would allocate the full claimed size before
+    /// reading any content, enabling a denial-of-service attack.
+    #[tokio::test]
+    async fn test_tcp_rejects_excessive_claimed_size() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        // Server that sends a message claiming to be 100MB
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            // Wait for any data (client sends something)
+            let mut buf = [0u8; 64];
+            let _ = socket.read(&mut buf).await;
+
+            // Send a response claiming to be 100MB (0x06400000 = 104857600)
+            // Format: tag (0x30) + long-form length (0x84 = 4 bytes follow)
+            let malicious_response = [
+                0x30, // SEQUENCE tag
+                0x84, // Long form: 4 length bytes follow
+                0x06, 0x40, 0x00,
+                0x00, // Length = 104857600 (100MB)
+                      // No actual content sent - attacker doesn't need to send anything
+            ];
+            let _ = socket.write_all(&malicious_response).await;
+
+            // Keep connection open briefly
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let transport = TcpTransport::connect(server_addr).await.unwrap();
+
+        // Send a request to trigger the malicious response
+        let request = build_request_with_id(1);
+        transport.send(&request).await.unwrap();
+
+        transport.register_request(1, Duration::from_secs(5));
+        let result = transport.recv(1).await;
+
+        // Should reject the message without allocating 100MB
+        assert!(result.is_err(), "Should reject excessive claimed size");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Error::MessageTooLarge { .. }),
+            "Expected MessageTooLarge error, got: {:?}",
+            err
+        );
+
+        server.await.unwrap();
+    }
+
+    /// Test that a custom max_allocation_size via builder is respected.
+    #[tokio::test]
+    async fn test_tcp_builder_custom_allocation_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        // Server that sends a message claiming to be 10KB (larger than our 1KB limit)
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            let mut buf = [0u8; 64];
+            let _ = socket.read(&mut buf).await;
+
+            // Send a response claiming to be 10KB (0x2800 = 10240)
+            let response = [
+                0x30, // SEQUENCE tag
+                0x82, // Long form: 2 length bytes follow
+                0x28, 0x00, // Length = 10240 (10KB)
+            ];
+            let _ = socket.write_all(&response).await;
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        // Use builder with 1KB limit
+        let transport = TcpTransport::builder()
+            .max_allocation_size(1024) // 1KB limit
+            .connect(server_addr)
+            .await
+            .unwrap();
+
+        let request = build_request_with_id(1);
+        transport.send(&request).await.unwrap();
+
+        transport.register_request(1, Duration::from_secs(5));
+        let result = transport.recv(1).await;
+
+        // Should reject 10KB message when limit is 1KB
+        assert!(
+            result.is_err(),
+            "Should reject message exceeding custom limit"
+        );
+        let err = result.unwrap_err();
+        match err {
+            Error::MessageTooLarge { size, max } => {
+                assert_eq!(size, 10240);
+                assert_eq!(max, 1024);
+            }
+            _ => panic!("Expected MessageTooLarge error, got: {:?}", err),
+        }
+
+        server.await.unwrap();
     }
 }
