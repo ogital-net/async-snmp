@@ -305,6 +305,8 @@ pub enum DecodeErrorKind {
     NegativeNonRepeaters { value: i32 },
     /// Negative max_repetitions in GETBULK PDU.
     NegativeMaxRepetitions { value: i32 },
+    /// OID exceeds maximum arc count during decode.
+    OidTooLong { count: usize, max: usize },
 }
 
 impl std::fmt::Display for DecodeErrorKind {
@@ -389,6 +391,9 @@ impl std::fmt::Display for DecodeErrorKind {
             }
             Self::NegativeMaxRepetitions { value } => {
                 write!(f, "negative max_repetitions: {}", value)
+            }
+            Self::OidTooLong { count, max } => {
+                write!(f, "OID has {} arcs, exceeds maximum {}", count, max)
             }
         }
     }

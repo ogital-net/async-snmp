@@ -8,12 +8,10 @@ use std::fmt;
 
 /// Maximum number of arcs (subidentifiers) allowed in an OID.
 ///
-/// SNMP implementations commonly limit OIDs to 128 subidentifiers.
-/// This provides protection against DoS attacks from maliciously long OIDs.
+/// Per RFC 2578 Section 3.5: "there are at most 128 sub-identifiers in a value".
 ///
-/// This limit is enforced optionally via [`Oid::validate_length()`]. The standard
-/// [`Oid::from_ber()`] and [`Oid::parse()`] methods accept OIDs of any length for
-/// maximum flexibility.
+/// This limit is enforced during BER decoding via [`Oid::from_ber()`], and can
+/// be checked via [`Oid::validate_length()`] for OIDs constructed from other sources.
 pub const MAX_OID_LEN: usize = 128;
 
 /// Object Identifier.
@@ -378,6 +376,8 @@ impl Oid {
     }
 
     /// Decode from BER format.
+    ///
+    /// Enforces [`MAX_OID_LEN`] limit per RFC 2578 Section 3.5.
     pub fn from_ber(data: &[u8]) -> Result<Self> {
         if data.is_empty() {
             return Ok(Self::empty());
@@ -407,6 +407,17 @@ impl Oid {
             let (arc, bytes_consumed) = decode_subidentifier(&data[i..])?;
             arcs.push(arc);
             i += bytes_consumed;
+
+            // RFC 2578 Section 3.5: "at most 128 sub-identifiers in a value"
+            if arcs.len() > MAX_OID_LEN {
+                return Err(Error::decode(
+                    i,
+                    DecodeErrorKind::OidTooLong {
+                        count: arcs.len(),
+                        max: MAX_OID_LEN,
+                    },
+                ));
+            }
         }
 
         Ok(Self { arcs })
@@ -815,5 +826,34 @@ mod tests {
 
         // Negative number (parsed as invalid)
         assert!("1.3.-6.1".parse::<Oid>().is_err());
+    }
+
+    #[test]
+    fn test_from_ber_enforces_max_oid_len() {
+        // Create BER data for an OID with more than MAX_OID_LEN arcs
+        // OID encoding: first subid encodes arc1*40+arc2, then each subsequent arc
+        // First subid gives us 2 arcs (e.g., 1 and 3), so we need MAX_OID_LEN - 2
+        // additional arcs to hit exactly MAX_OID_LEN.
+
+        // Build OID at exactly MAX_OID_LEN: 1.3 followed by (MAX_OID_LEN - 2) arcs of value 1
+        let mut ber_at_limit = vec![0x2B]; // First subid = 1*40 + 3 = 43 (encodes arc1=1, arc2=3)
+        ber_at_limit.extend(std::iter::repeat_n(0x01, MAX_OID_LEN - 2));
+
+        let result = Oid::from_ber(&ber_at_limit);
+        assert!(
+            result.is_ok(),
+            "OID with exactly MAX_OID_LEN arcs should decode successfully"
+        );
+        assert_eq!(result.unwrap().len(), MAX_OID_LEN);
+
+        // Now one more arc should exceed the limit
+        let mut ber_over_limit = vec![0x2B]; // arc1=1, arc2=3
+        ber_over_limit.extend(std::iter::repeat_n(0x01, MAX_OID_LEN - 1));
+
+        let result = Oid::from_ber(&ber_over_limit);
+        assert!(
+            result.is_err(),
+            "OID exceeding MAX_OID_LEN should fail to decode"
+        );
     }
 }
