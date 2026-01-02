@@ -8,13 +8,17 @@
 
 Modern, async-first SNMP client library for Rust.
 
+## Note
+
+This library is not currently stable. While pre v1.0, breaking changes are likely to occur frequently, no attempt will be made to maintain backward compatibility pre-1.0.
+
 ## Features
 
 - **Full protocol support**: SNMPv1, v2c, and v3 (USM)
 - **Async-first**: Built on Tokio for high-performance async I/O
 - **All operations**: GET, GETNEXT, GETBULK, SET, WALK, BULKWALK
 - **SNMPv3 security**: MD5/SHA-1/SHA-2 authentication, DES/AES-128/192/256 privacy
-- **Multiple transports**: UDP, TCP, and shared UDP for high-throughput polling
+- **Multiple transports**: UDP, TCP, and shared UDP for scalable polling
 - **Zero-copy decoding**: Minimal allocations using `bytes` crate
 - **Type-safe**: Compile-time OID validation with `oid!` macro
 
@@ -114,9 +118,9 @@ async fn main() -> Result<(), async_snmp::Error> {
 }
 ```
 
-### High-Throughput Polling (Shared Transport)
+### Scalable Polling (Shared Transport)
 
-For monitoring systems polling thousands of targets:
+For monitoring systems polling thousands of targets, share a single UDP socket across all clients. This provides significant resource efficiency without sacrificing throughput:
 
 ```rust
 use async_snmp::{Auth, Client, UdpTransport, oid};
@@ -152,6 +156,20 @@ async fn main() -> Result<(), async_snmp::Error> {
 }
 ```
 
+**Benefits of shared transport:**
+- **1 file descriptor** for all targets (vs 1 per target with separate sockets)
+- **Firewall session reuse** between polls to the same target
+- **Lower memory** from shared socket buffers
+- **No per-poll socket creation** overhead
+
+**Scaling guidance:**
+
+| Approach | When to use |
+|----------|-------------|
+| Single shared socket | Recommended for most use cases |
+| Multiple shared sockets | Extreme scale (~100,000s+ targets), shard by target |
+| Per-client socket (`.connect()`) | When scrape isolation is required (has FD and syscall overhead) |
+
 ## Documentation
 
 Full API documentation is available on [docs.rs](https://docs.rs/async-snmp).
@@ -160,7 +178,6 @@ Full API documentation is available on [docs.rs](https://docs.rs/async-snmp).
 
 | Feature | Description |
 |---------|-------------|
-| `testing` | Expose `transport::MockTransport` for downstream testing |
 | `serde` | Serialize/Deserialize support for configuration types |
 | `cli` | CLI utilities (`asnmp-get`, `asnmp-walk`, `asnmp-set`) |
 

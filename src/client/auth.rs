@@ -5,7 +5,7 @@
 //!
 //! # Master Key Caching
 //!
-//! For high-throughput polling of many engines with shared credentials, use
+//! When polling many engines with shared credentials, use
 //! [`MasterKeys`] to cache the expensive password-to-key
 //! derivation:
 //!
@@ -211,7 +211,7 @@ impl UsmBuilder {
     /// Add authentication (authNoPriv or authPriv).
     ///
     /// This method performs the full key derivation (~850us for SHA-256) when
-    /// the client connects. For high-throughput polling of many engines,
+    /// the client connects. When polling many engines with shared credentials,
     /// consider using [`with_master_keys`](Self::with_master_keys) instead.
     ///
     /// # Supported Protocols
@@ -265,8 +265,8 @@ impl UsmBuilder {
 
     /// Use pre-computed master keys for authentication and privacy.
     ///
-    /// This is the efficient path for high-throughput polling of many engines
-    /// with shared credentials. The expensive password-to-key derivation
+    /// This is the efficient path when polling many engines with shared
+    /// credentials. The expensive password-to-key derivation
     /// (~850μs) is done once when creating the [`MasterKeys`], and only the
     /// cheap localization (~1μs) is performed per engine.
     ///

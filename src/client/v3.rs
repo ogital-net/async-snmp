@@ -30,7 +30,7 @@ use super::Client;
 ///
 /// # Master Key Caching
 ///
-/// For high-throughput polling of many engines with shared credentials, use
+/// When polling many engines with shared credentials, use
 /// [`MasterKeys`](crate::MasterKeys) to cache the expensive password-to-key
 /// derivation. When `master_keys` is set, passwords are ignored and keys are
 /// derived from the cached master keys.

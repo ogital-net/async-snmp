@@ -115,3 +115,24 @@ pub struct RequestContext {
     /// The view that controls which OIDs can be written.
     pub write_view: Option<Bytes>,
 }
+
+impl RequestContext {
+    /// Create a minimal context for unit testing.
+    pub fn test_context() -> Self {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        Self {
+            source: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            version: Version::V2c,
+            security_model: SecurityModel::V2c,
+            security_name: Bytes::from_static(b"public"),
+            security_level: SecurityLevel::NoAuthNoPriv,
+            context_name: Bytes::new(),
+            request_id: 1,
+            pdu_type: PduType::GetRequest,
+            group_name: None,
+            read_view: None,
+            write_view: None,
+        }
+    }
+}

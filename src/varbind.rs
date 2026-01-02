@@ -81,7 +81,11 @@ pub fn encode_varbind_list(buf: &mut EncodeBuf, varbinds: &[VarBind]) {
 /// Expects a SEQUENCE containing zero or more VarBind SEQUENCE elements.
 pub fn decode_varbind_list(decoder: &mut Decoder) -> Result<Vec<VarBind>> {
     let mut seq = decoder.read_sequence()?;
-    let mut varbinds = Vec::new();
+
+    // Estimate capacity: typical VarBind is 20-50 bytes, use 16 as conservative divisor
+    // to minimize reallocations while not over-allocating
+    let estimated_capacity = (seq.remaining() / 16).max(1);
+    let mut varbinds = Vec::with_capacity(estimated_capacity);
 
     while !seq.is_empty() {
         varbinds.push(VarBind::decode(&mut seq)?);

@@ -278,7 +278,7 @@ impl ClientBuilder {
         self
     }
 
-    /// Set shared engine cache (V3 only, for high-throughput polling).
+    /// Set shared engine cache (V3 only, for polling many targets).
     ///
     /// Allows multiple clients to share discovered engine state, reducing
     /// the number of discovery requests. This is particularly useful when
@@ -449,8 +449,8 @@ impl ClientBuilder {
     /// recommended connection method for most use cases due to UDP's lower
     /// overhead compared to TCP.
     ///
-    /// For high-throughput scenarios with many targets, consider using
-    /// [`UdpTransport`](crate::transport::UdpTransport) with [`build_with()`](Self::build_with).
+    /// For polling many targets, consider using a shared
+    /// [`UdpTransport`](crate::transport::UdpTransport) with [`build()`](Self::build).
     ///
     /// # Errors
     ///

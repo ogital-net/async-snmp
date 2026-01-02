@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Significantly expanded rustdoc coverage across all modules with examples
 - Added crate-level documentation sections for error handling, tracing,
-  agent compatibility, and high-throughput SNMPv3 polling
+  agent compatibility, and scalable SNMPv3 polling
 - Improved examples to use test container credentials and RFC 5737 TEST-NET
   addresses
 
@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Transport implementations:
   - `UdpTransport` for single-target clients
   - `TcpTransport` for stream-based connections
-  - `SharedUdpTransport` for high-throughput polling (thousands of targets)
+  - `SharedUdpTransport` for scalable polling (many targets, single FD)
 - `NotificationReceiver` for trap/inform handling
 - `Agent` with `MibHandler` trait for building SNMP agents
 - VACM (View-Based Access Control Model) support

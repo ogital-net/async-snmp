@@ -3,7 +3,7 @@
 //! This example demonstrates SNMPv3 operations with authentication and privacy:
 //! - authPriv security level (SHA-1 authentication + AES-128 encryption)
 //! - Various security levels (noAuthNoPriv, authNoPriv, authPriv)
-//! - Master key caching for high-throughput scenarios
+//! - Master key caching for polling many engines
 //!
 //! Run with: cargo run --example snmpv3_client
 //!
@@ -92,9 +92,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // =========================================================================
-    // Example 4: Master key caching for high-throughput polling
+    // Example 4: Master key caching for polling many engines
     // =========================================================================
-    println!("--- Master Key Caching for High-Throughput ---\n");
+    println!("--- Master Key Caching ---\n");
 
     // For polling many devices with the same credentials, pre-compute master keys.
     // This avoids the expensive key derivation (~850us) on every connection.

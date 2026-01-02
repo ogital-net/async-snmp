@@ -189,24 +189,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // =========================================================================
-    // Example 6: When to use TCP
-    // =========================================================================
-    println!("\n--- When to Use TCP ---\n");
-
-    println!("Use TCP transport when:");
-    println!("  - Responses may exceed UDP's 64KB limit");
-    println!("  - Walking very large tables (e.g., routing tables)");
-    println!("  - Firewalls block UDP but allow TCP");
-    println!("  - Network has high packet loss (TCP handles retransmission)");
-    println!("  - You need reliable delivery without application-level retries\n");
-
-    println!("Use UDP transport when:");
-    println!("  - Polling many targets (one socket per target with TCP)");
-    println!("  - Low latency is critical (no TCP handshake)");
-    println!("  - Agent doesn't support TCP (most don't by default)");
-    println!("  - Sharing a UdpTransport for high-throughput polling");
-
     println!("\nExample complete!");
     Ok(())
 }
