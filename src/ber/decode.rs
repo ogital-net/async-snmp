@@ -78,7 +78,8 @@ impl Decoder {
 
     /// Read raw bytes without copying.
     pub fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
-        if self.offset + len > self.data.len() {
+        // Use saturating_add to prevent overflow from bypassing bounds check
+        if self.offset.saturating_add(len) > self.data.len() {
             return Err(Error::decode(
                 self.offset,
                 DecodeErrorKind::InsufficientData {
@@ -267,10 +268,12 @@ impl Decoder {
     pub fn skip_tlv(&mut self) -> Result<()> {
         let _tag = self.read_tag()?;
         let len = self.read_length()?;
-        self.offset += len;
-        if self.offset > self.data.len() {
+        // Use saturating_add and check BEFORE modifying offset to prevent overflow
+        let new_offset = self.offset.saturating_add(len);
+        if new_offset > self.data.len() {
             return Err(Error::decode(self.offset, DecodeErrorKind::TlvOverflow));
         }
+        self.offset = new_offset;
         Ok(())
     }
 
@@ -378,5 +381,50 @@ mod tests {
         let result = dec.read_integer();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0x01020304);
+    }
+
+    #[test]
+    fn test_read_bytes_rejects_oversized_length() {
+        // When length exceeds remaining data, should return InsufficientData error
+        let mut dec = Decoder::from_slice(&[0x01, 0x02, 0x03]);
+        // Try to read more bytes than available
+        let result = dec.read_bytes(100);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::error::Error::Decode {
+                    kind: DecodeErrorKind::InsufficientData {
+                        needed: 100,
+                        available: 3
+                    },
+                    ..
+                }
+            ),
+            "expected InsufficientData error, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_skip_tlv_rejects_oversized_length() {
+        // TLV with length claiming more bytes than available
+        // Tag 0x04 (OCTET STRING), Length 0x82 0x01 0x00 (256 bytes), but only 3 content bytes
+        let mut dec = Decoder::from_slice(&[0x04, 0x82, 0x01, 0x00, 0xAA, 0xBB, 0xCC]);
+        let result = dec.skip_tlv();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::error::Error::Decode {
+                    kind: DecodeErrorKind::TlvOverflow,
+                    ..
+                }
+            ),
+            "expected TlvOverflow error, got {:?}",
+            err
+        );
     }
 }
