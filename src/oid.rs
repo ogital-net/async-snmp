@@ -227,7 +227,7 @@ impl Oid {
     ///
     /// - arc1 must be 0, 1, or 2
     /// - arc2 must be <= 39 when arc1 is 0 or 1
-    /// - arc2 can be any value when arc1 is 2
+    /// - arc2 must not cause overflow when computing first subidentifier (arc1*40 + arc2)
     ///
     /// # Examples
     ///
@@ -246,7 +246,7 @@ impl Oid {
     /// let invalid = Oid::from_slice(&[0, 40]);
     /// assert!(invalid.validate().is_err());
     ///
-    /// // arc2 can be any value when arc1 is 2
+    /// // arc2 can be large when arc1 is 2, but must not overflow
     /// let valid = Oid::from_slice(&[2, 999]);
     /// assert!(valid.validate().is_ok());
     /// ```
@@ -262,14 +262,23 @@ impl Oid {
             return Err(Error::invalid_oid(OidErrorKind::InvalidFirstArc(arc1)));
         }
 
-        // arc2 must be <= 39 when arc1 < 2
+        // Validate arc2 constraints
         if self.arcs.len() >= 2 {
             let arc2 = self.arcs[1];
+
+            // arc2 must be <= 39 when arc1 < 2
             if arc1 < 2 && arc2 >= 40 {
                 return Err(Error::invalid_oid(OidErrorKind::InvalidSecondArc {
                     first: arc1,
                     second: arc2,
                 }));
+            }
+
+            // Check that first subidentifier (arc1*40 + arc2) won't overflow u32.
+            // Max valid arc2 = u32::MAX - arc1*40
+            let base = arc1 * 40;
+            if arc2 > u32::MAX - base {
+                return Err(Error::invalid_oid(OidErrorKind::SubidentifierOverflow));
             }
         }
 
@@ -826,6 +835,47 @@ mod tests {
 
         // Negative number (parsed as invalid)
         assert!("1.3.-6.1".parse::<Oid>().is_err());
+    }
+
+    // Test for first subidentifier overflow (arc1*40 + arc2 must fit in u32)
+    // When arc1=2, arc2 cannot exceed u32::MAX - 80
+    #[test]
+    fn test_validate_arc2_overflow_when_arc1_is_2() {
+        // Maximum valid arc2 when arc1=2: u32::MAX - 80 = 4294967215
+        let max_valid_arc2 = u32::MAX - 80;
+        let oid = Oid::from_slice(&[2, max_valid_arc2]);
+        assert!(
+            oid.validate().is_ok(),
+            "arc2={} with arc1=2 should be valid (max that fits)",
+            max_valid_arc2
+        );
+
+        // One more than max should fail validation
+        let overflow_arc2 = u32::MAX - 79; // 2*40 + this = u32::MAX + 1
+        let oid = Oid::from_slice(&[2, overflow_arc2]);
+        assert!(
+            oid.validate().is_err(),
+            "arc2={} with arc1=2 should be invalid (would overflow first subidentifier)",
+            overflow_arc2
+        );
+
+        // Also test arc2 = u32::MAX should definitely fail
+        let oid = Oid::from_slice(&[2, u32::MAX]);
+        assert!(
+            oid.validate().is_err(),
+            "arc2=u32::MAX with arc1=2 should be invalid"
+        );
+    }
+
+    #[test]
+    fn test_to_ber_checked_rejects_overflow() {
+        // Encoding an OID that would overflow should fail via to_ber_checked
+        let oid = Oid::from_slice(&[2, u32::MAX]);
+        let result = oid.to_ber_checked();
+        assert!(
+            result.is_err(),
+            "to_ber_checked should reject OID that would overflow"
+        );
     }
 
     #[test]
