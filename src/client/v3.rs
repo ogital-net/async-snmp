@@ -241,7 +241,10 @@ impl<T: Transport> Client<T> {
     }
 
     /// Build and encode a V3 message with authentication and/or encryption.
-    pub(super) fn build_v3_message(&self, pdu: &Pdu) -> Result<(Vec<u8>, i32)> {
+    ///
+    /// The `msg_id` parameter is separate from `pdu.request_id` per RFC 3412
+    /// Section 6.2: retransmissions SHOULD use a new msgID for each attempt.
+    pub(super) fn build_v3_message(&self, pdu: &Pdu, msg_id: i32) -> Result<Vec<u8>> {
         let security = self
             .inner
             .config
@@ -257,7 +260,6 @@ impl<T: Transport> Client<T> {
         let derived = self.inner.derived_keys.read().unwrap();
 
         let security_level = security.security_level();
-        let msg_id = pdu.request_id; // Use request_id as msg_id for correlation
 
         // Build scoped PDU
         let scoped_pdu = ScopedPdu::new(
@@ -376,7 +378,7 @@ impl<T: Transport> Client<T> {
             }
         }
 
-        Ok((encoded, msg_id))
+        Ok(encoded)
     }
 
     /// Send a V3 request and handle the response.
@@ -418,8 +420,9 @@ impl<T: Transport> Client<T> {
                 tracing::debug!("retrying V3 request");
             }
 
-            // Build message (may need fresh timestamps on retry)
-            let (data, msg_id) = self.build_v3_message(&pdu)?;
+            // RFC 3412 Section 6.2: use fresh msgID for each transmission attempt
+            let msg_id = self.next_request_id();
+            let data = self.build_v3_message(&pdu, msg_id)?;
 
             tracing::debug!(
                 snmp.pdu_type = ?pdu.pdu_type,
