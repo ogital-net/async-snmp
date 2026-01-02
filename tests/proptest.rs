@@ -9,9 +9,9 @@ mod common;
 use async_snmp::ber::{Decoder, EncodeBuf};
 use async_snmp::oid::Oid;
 use async_snmp::pdu::{GetBulkPdu, Pdu, PduType, TrapV1Pdu};
+use async_snmp::transport::UdpTransport;
 use async_snmp::value::Value;
 use async_snmp::varbind::VarBind;
-use async_snmp::transport::UdpTransport;
 use async_snmp::{Auth, Client};
 use bytes::Bytes;
 use common::TestAgent;
@@ -35,7 +35,9 @@ impl SharedEnv {
     fn new() -> Self {
         let runtime = Runtime::new().expect("failed to create runtime");
         let agent = runtime.block_on(TestAgent::new());
-        let transport = runtime.block_on(UdpTransport::bind("[::]:0")).expect("bind transport");
+        let transport = runtime
+            .block_on(UdpTransport::bind("[::]:0"))
+            .expect("bind transport");
         Self {
             runtime,
             agent,
