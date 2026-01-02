@@ -2,10 +2,10 @@
 //!
 //! PDUs represent the different SNMP operations.
 
-use crate::ber::{Decoder, EncodeBuf, tag};
+use crate::ber::{tag, Decoder, EncodeBuf};
 use crate::error::{DecodeErrorKind, Error, ErrorStatus, Result};
 use crate::oid::Oid;
-use crate::varbind::{VarBind, decode_varbind_list, encode_varbind_list};
+use crate::varbind::{decode_varbind_list, encode_varbind_list, VarBind};
 
 /// PDU type tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +328,13 @@ impl TrapV1Pdu {
     /// - For enterprise-specific traps (generic_trap = 6):
     ///   The trap OID is `enterprise.0.specific_trap`
     ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidTrap`] if:
+    /// - `generic_trap < 0` (undefined per RFC 1157)
+    /// - `generic_trap == i32::MAX` (would overflow when adding 1)
+    /// - `specific_trap < 0` for enterprise-specific traps (OID arcs must be non-negative)
+    ///
     /// # Example
     ///
     /// ```rust
@@ -343,7 +350,7 @@ impl TrapV1Pdu {
     ///     12345,
     ///     vec![],
     /// );
-    /// assert_eq!(trap.v2_trap_oid(), oid!(1, 3, 6, 1, 6, 3, 1, 1, 5, 3));
+    /// assert_eq!(trap.v2_trap_oid().unwrap(), oid!(1, 3, 6, 1, 6, 3, 1, 1, 5, 3));
     ///
     /// // Enterprise-specific trap -> enterprise.0.specific_trap
     /// let trap = TrapV1Pdu::new(
@@ -354,20 +361,32 @@ impl TrapV1Pdu {
     ///     12345,
     ///     vec![],
     /// );
-    /// assert_eq!(trap.v2_trap_oid(), oid!(1, 3, 6, 1, 4, 1, 9999, 0, 42));
+    /// assert_eq!(trap.v2_trap_oid().unwrap(), oid!(1, 3, 6, 1, 4, 1, 9999, 0, 42));
     /// ```
-    pub fn v2_trap_oid(&self) -> Oid {
+    pub fn v2_trap_oid(&self) -> crate::Result<Oid> {
         if self.is_enterprise_specific() {
-            // Enterprise-specific: enterprise.0.specific_trap
+            if self.specific_trap < 0 {
+                return Err(crate::Error::InvalidTrap {
+                    reason: "specific_trap cannot be negative",
+                });
+            }
             let mut arcs: Vec<u32> = self.enterprise.arcs().to_vec();
             arcs.push(0);
             arcs.push(self.specific_trap as u32);
-            Oid::new(arcs)
+            Ok(Oid::new(arcs))
         } else {
-            // Generic trap: snmpTraps.{generic_trap + 1}
-            // snmpTraps = 1.3.6.1.6.3.1.1.5
+            if self.generic_trap < 0 {
+                return Err(crate::Error::InvalidTrap {
+                    reason: "generic_trap cannot be negative",
+                });
+            }
+            if self.generic_trap == i32::MAX {
+                return Err(crate::Error::InvalidTrap {
+                    reason: "generic_trap overflow",
+                });
+            }
             let trap_num = self.generic_trap + 1;
-            crate::oid!(1, 3, 6, 1, 6, 3, 1, 1, 5).child(trap_num as u32)
+            Ok(crate::oid!(1, 3, 6, 1, 6, 3, 1, 1, 5).child(trap_num as u32))
         }
     }
 
@@ -632,7 +651,7 @@ mod tests {
                 vec![],
             );
             assert_eq!(
-                trap.v2_trap_oid(),
+                trap.v2_trap_oid().unwrap(),
                 expected_oid,
                 "Failed for {:?}",
                 generic_trap
@@ -654,7 +673,7 @@ mod tests {
 
         // Expected: 1.3.6.1.4.1.9999.1.2.0.42
         assert_eq!(
-            trap.v2_trap_oid(),
+            trap.v2_trap_oid().unwrap(),
             oid!(1, 3, 6, 1, 4, 1, 9999, 1, 2, 0, 42)
         );
     }
@@ -672,7 +691,10 @@ mod tests {
         );
 
         // Expected: 1.3.6.1.4.1.1234.0.0
-        assert_eq!(trap.v2_trap_oid(), oid!(1, 3, 6, 1, 4, 1, 1234, 0, 0));
+        assert_eq!(
+            trap.v2_trap_oid().unwrap(),
+            oid!(1, 3, 6, 1, 4, 1, 1234, 0, 0)
+        );
     }
 
     #[test]

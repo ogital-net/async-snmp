@@ -1241,3 +1241,259 @@ fn unknown_value_tag_preserved() {
         _ => panic!("expected Value::Unknown, got {:?}", result),
     }
 }
+
+// =============================================================================
+// Full-Range Property Tests for Arithmetic/Conversion Safety
+// =============================================================================
+
+use async_snmp::pdu::GenericTrap;
+
+fn arb_trap_v1_pdu_full_range() -> impl Strategy<Value = TrapV1Pdu> {
+    (
+        arb_oid(),
+        any::<[u8; 4]>(),
+        any::<i32>(),
+        any::<i32>(),
+        any::<u32>(),
+        arb_varbinds(),
+    )
+        .prop_map(
+            |(enterprise, agent_addr, generic_trap, specific_trap, time_stamp, varbinds)| {
+                TrapV1Pdu {
+                    enterprise,
+                    agent_addr,
+                    generic_trap,
+                    specific_trap,
+                    time_stamp,
+                    varbinds,
+                }
+            },
+        )
+}
+
+fn arb_pdu_full_range() -> impl Strategy<Value = Pdu> {
+    (
+        arb_pdu_type(),
+        any::<i32>(),
+        any::<i32>(),
+        any::<i32>(),
+        arb_varbinds(),
+    )
+        .prop_map(
+            |(pdu_type, request_id, error_status, error_index, varbinds)| Pdu {
+                pdu_type,
+                request_id,
+                error_status,
+                error_index,
+                varbinds,
+            },
+        )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    #[test]
+    fn trap_v1_v2_trap_oid_no_panic(pdu in arb_trap_v1_pdu_full_range()) {
+        let result = pdu.v2_trap_oid();
+        if let Ok(oid) = result {
+            prop_assert!(!oid.is_empty());
+            prop_assert!(oid.len() >= 2);
+        }
+    }
+
+    #[test]
+    fn trap_v1_v2_trap_oid_enterprise_specific_structure(
+        enterprise in arb_oid(),
+        specific_trap in any::<i32>(),
+    ) {
+        let pdu = TrapV1Pdu {
+            enterprise: enterprise.clone(),
+            agent_addr: [0, 0, 0, 0],
+            generic_trap: GenericTrap::EnterpriseSpecific as i32,
+            specific_trap,
+            time_stamp: 0,
+            varbinds: vec![],
+        };
+
+        let result = pdu.v2_trap_oid();
+
+        if specific_trap < 0 {
+            prop_assert!(result.is_err());
+        } else if !enterprise.is_empty() {
+            let oid = result.unwrap();
+            prop_assert!(oid.starts_with(&enterprise));
+        }
+    }
+
+    #[test]
+    fn trap_v1_generic_trap_enum_no_panic(generic_trap in any::<i32>()) {
+        let pdu = TrapV1Pdu {
+            enterprise: Oid::empty(),
+            agent_addr: [0, 0, 0, 0],
+            generic_trap,
+            specific_trap: 0,
+            time_stamp: 0,
+            varbinds: vec![],
+        };
+
+        let result = pdu.generic_trap_enum();
+
+        if (0..=6).contains(&generic_trap) {
+            prop_assert!(result.is_some());
+        } else {
+            prop_assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn trap_v1_is_enterprise_specific_consistent(generic_trap in any::<i32>()) {
+        let pdu = TrapV1Pdu {
+            enterprise: Oid::empty(),
+            agent_addr: [0, 0, 0, 0],
+            generic_trap,
+            specific_trap: 0,
+            time_stamp: 0,
+            varbinds: vec![],
+        };
+
+        prop_assert_eq!(pdu.is_enterprise_specific(), generic_trap == 6);
+    }
+
+    #[test]
+    fn pdu_to_response_preserves_fields(pdu in arb_pdu_full_range()) {
+        let response = pdu.to_response();
+
+        prop_assert_eq!(response.pdu_type, PduType::Response);
+        prop_assert_eq!(response.request_id, pdu.request_id);
+        prop_assert_eq!(response.error_status, 0);
+        prop_assert_eq!(response.error_index, 0);
+        prop_assert_eq!(response.varbinds, pdu.varbinds);
+    }
+
+    #[test]
+    fn pdu_is_error_consistent(pdu in arb_pdu_full_range()) {
+        prop_assert_eq!(pdu.is_error(), pdu.error_status != 0);
+    }
+
+    #[test]
+    fn pdu_error_status_enum_no_panic(error_status in any::<i32>()) {
+        let pdu = Pdu {
+            pdu_type: PduType::Response,
+            request_id: 0,
+            error_status,
+            error_index: 0,
+            varbinds: vec![],
+        };
+
+        let _status = pdu.error_status_enum();
+    }
+
+    #[test]
+    fn generic_trap_from_i32_range(value in any::<i32>()) {
+        let result = GenericTrap::from_i32(value);
+
+        if (0..=6).contains(&value) {
+            prop_assert!(result.is_some());
+            prop_assert_eq!(result.unwrap().as_i32(), value);
+        } else {
+            prop_assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn value_as_u32_integer_boundary(value in any::<i32>()) {
+        let v = Value::Integer(value);
+        let result = v.as_u32();
+
+        if value >= 0 {
+            prop_assert_eq!(result, Some(value as u32));
+        } else {
+            prop_assert_eq!(result, None);
+        }
+    }
+
+    #[test]
+    fn value_as_u64_integer_boundary(value in any::<i32>()) {
+        let v = Value::Integer(value);
+        let result = v.as_u64();
+
+        if value >= 0 {
+            prop_assert_eq!(result, Some(value as u64));
+        } else {
+            prop_assert_eq!(result, None);
+        }
+    }
+
+    #[test]
+    fn oid_child_length_increases(oid in arb_oid(), arc in any::<u32>()) {
+        let child = oid.child(arc);
+        prop_assert_eq!(child.len(), oid.len() + 1);
+        prop_assert!(child.starts_with(&oid));
+    }
+
+    #[test]
+    fn oid_parent_length_decreases(oid in arb_oid()) {
+        if let Some(parent) = oid.parent() {
+            prop_assert_eq!(parent.len(), oid.len() - 1);
+            prop_assert!(oid.starts_with(&parent));
+        } else {
+            prop_assert!(oid.is_empty());
+        }
+    }
+}
+
+// =============================================================================
+// Boundary Value Tests for Specific Edge Cases
+// =============================================================================
+
+mod trap_v1_boundary {
+    use super::*;
+
+    fn make_trap(generic_trap: i32, specific_trap: i32) -> TrapV1Pdu {
+        TrapV1Pdu {
+            enterprise: Oid::from_slice(&[1, 3, 6, 1, 4, 1, 9999]),
+            agent_addr: [192, 168, 1, 1],
+            generic_trap,
+            specific_trap,
+            time_stamp: 0,
+            varbinds: vec![],
+        }
+    }
+
+    #[test]
+    fn v2_trap_oid_generic_trap_max() {
+        let trap = make_trap(i32::MAX, 0);
+        assert!(trap.v2_trap_oid().is_err());
+    }
+
+    #[test]
+    fn v2_trap_oid_generic_trap_min() {
+        let trap = make_trap(i32::MIN, 0);
+        assert!(trap.v2_trap_oid().is_err());
+    }
+
+    #[test]
+    fn v2_trap_oid_generic_trap_negative() {
+        let trap = make_trap(-1, 0);
+        assert!(trap.v2_trap_oid().is_err());
+    }
+
+    #[test]
+    fn v2_trap_oid_specific_trap_negative() {
+        let trap = make_trap(GenericTrap::EnterpriseSpecific as i32, -1);
+        assert!(trap.v2_trap_oid().is_err());
+    }
+
+    #[test]
+    fn v2_trap_oid_specific_trap_min() {
+        let trap = make_trap(GenericTrap::EnterpriseSpecific as i32, i32::MIN);
+        assert!(trap.v2_trap_oid().is_err());
+    }
+
+    #[test]
+    fn v2_trap_oid_both_max() {
+        let trap = make_trap(i32::MAX, i32::MAX);
+        assert!(trap.v2_trap_oid().is_err());
+    }
+}

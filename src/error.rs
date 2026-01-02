@@ -750,6 +750,13 @@ pub enum Error {
     #[error("GETBULK is not supported in SNMPv1")]
     GetBulkNotSupportedInV1,
 
+    /// Invalid SNMPv1 trap data.
+    ///
+    /// Returned when trap PDU fields cannot be converted to valid SNMPv2 format
+    /// (e.g., generic_trap overflow, negative specific_trap).
+    #[error("invalid trap: {reason}")]
+    InvalidTrap { reason: &'static str },
+
     /// Configuration error.
     ///
     /// Returned when client configuration is invalid (e.g., privacy
