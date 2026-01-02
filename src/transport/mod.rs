@@ -20,14 +20,8 @@ mod tcp;
 mod udp;
 mod udp_core;
 
-#[cfg(any(test, feature = "testing"))]
-mod mock;
-
 pub use tcp::*;
 pub use udp::*;
-
-#[cfg(any(test, feature = "testing"))]
-pub use mock::*;
 
 use crate::error::Result;
 use bytes::Bytes;

@@ -1,29 +1,153 @@
-//! Common test fixtures and constants.
+//! Standard test fixtures with realistic MIB data.
 
-use async_snmp::{Oid, oid};
+use async_snmp::{Oid, Value, oid};
+use std::collections::BTreeMap;
 
 // =============================================================================
-// Standard system MIB OIDs (1.3.6.1.2.1.1.*)
+// MIB data fixtures (for TestHandler)
 // =============================================================================
 
+/// Standard system MIB entries (1.3.6.1.2.1.1).
+///
+/// Returns OIDs for:
+/// - sysDescr.0 (1.3.6.1.2.1.1.1.0)
+/// - sysObjectID.0 (1.3.6.1.2.1.1.2.0)
+/// - sysUpTime.0 (1.3.6.1.2.1.1.3.0)
+/// - sysContact.0 (1.3.6.1.2.1.1.4.0)
+/// - sysName.0 (1.3.6.1.2.1.1.5.0)
+/// - sysLocation.0 (1.3.6.1.2.1.1.6.0)
+/// - sysServices.0 (1.3.6.1.2.1.1.7.0)
+pub fn system_mib() -> BTreeMap<Oid, Value> {
+    let mut data = BTreeMap::new();
+
+    data.insert(
+        oid!(1, 3, 6, 1, 2, 1, 1, 1, 0),
+        Value::OctetString("Test SNMP Agent".into()),
+    );
+    data.insert(
+        oid!(1, 3, 6, 1, 2, 1, 1, 2, 0),
+        Value::ObjectIdentifier(oid!(1, 3, 6, 1, 4, 1, 99999)),
+    );
+    data.insert(oid!(1, 3, 6, 1, 2, 1, 1, 3, 0), Value::TimeTicks(123456));
+    data.insert(
+        oid!(1, 3, 6, 1, 2, 1, 1, 4, 0),
+        Value::OctetString("admin@test.local".into()),
+    );
+    data.insert(
+        oid!(1, 3, 6, 1, 2, 1, 1, 5, 0),
+        Value::OctetString("test-agent".into()),
+    );
+    data.insert(
+        oid!(1, 3, 6, 1, 2, 1, 1, 6, 0),
+        Value::OctetString("Test Lab".into()),
+    );
+    data.insert(oid!(1, 3, 6, 1, 2, 1, 1, 7, 0), Value::Integer(72));
+
+    data
+}
+
+/// Interface table entries for testing WALK operations.
+///
+/// Creates `count` interface entries with ifIndex, ifDescr, ifType, etc.
+pub fn interface_table(count: usize) -> BTreeMap<Oid, Value> {
+    let mut data = BTreeMap::new();
+
+    // ifNumber.0
+    data.insert(
+        oid!(1, 3, 6, 1, 2, 1, 2, 1, 0),
+        Value::Integer(count as i32),
+    );
+
+    for i in 1..=count {
+        let idx = i as u32;
+
+        // ifIndex.{i}
+        data.insert(
+            oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 1, idx),
+            Value::Integer(i as i32),
+        );
+
+        // ifDescr.{i}
+        data.insert(
+            oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 2, idx),
+            Value::OctetString(format!("eth{}", i - 1).into()),
+        );
+
+        // ifType.{i} - ethernetCsmacd(6)
+        data.insert(oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 3, idx), Value::Integer(6));
+
+        // ifMtu.{i}
+        data.insert(
+            oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 4, idx),
+            Value::Integer(1500),
+        );
+
+        // ifSpeed.{i} - 1 Gbps
+        data.insert(
+            oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 5, idx),
+            Value::Gauge32(1_000_000_000),
+        );
+
+        // ifPhysAddress.{i}
+        data.insert(
+            oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 6, idx),
+            Value::OctetString(vec![0x00, 0x11, 0x22, 0x33, 0x44, i as u8].into()),
+        );
+
+        // ifAdminStatus.{i} - up(1)
+        data.insert(oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 7, idx), Value::Integer(1));
+
+        // ifOperStatus.{i} - up(1)
+        data.insert(oid!(1, 3, 6, 1, 2, 1, 2, 2, 1, 8, idx), Value::Integer(1));
+    }
+
+    data
+}
+
+/// Combine multiple fixture sets.
+pub fn combined(fixtures: impl IntoIterator<Item = BTreeMap<Oid, Value>>) -> BTreeMap<Oid, Value> {
+    let mut result = BTreeMap::new();
+    for fixture in fixtures {
+        result.extend(fixture);
+    }
+    result
+}
+
+// =============================================================================
+// OID helper functions
+// =============================================================================
+
+/// sysDescr.0
 pub fn sys_descr() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)
 }
+
+/// sysObjectID.0
 pub fn sys_object_id() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 2, 0)
 }
+
+/// sysUpTime.0
 pub fn sys_uptime() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 3, 0)
 }
+
+/// sysContact.0
 pub fn sys_contact() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 4, 0)
 }
+
+/// sysName.0
 pub fn sys_name() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 5, 0)
 }
+
+/// sysLocation.0
 pub fn sys_location() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 6, 0)
 }
+
+/// sysServices.0
 pub fn sys_services() -> Oid {
     oid!(1, 3, 6, 1, 2, 1, 1, 7, 0)
 }
@@ -52,7 +176,7 @@ pub fn nonexistent_oid() -> Oid {
 }
 
 // =============================================================================
-// Custom container credentials (async-snmp-test)
+// Container test credentials
 // =============================================================================
 
 /// Auth password for all V3 users
@@ -87,7 +211,7 @@ pub mod users {
 }
 
 // =============================================================================
-// Testcontainer helpers
+// Container helpers
 // =============================================================================
 
 /// Get the snmpd image to use for container tests.

@@ -17,4 +17,8 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 161/udp 161/tcp
 
+# Health check verifies snmpd is responding to requests
+HEALTHCHECK --interval=500ms --timeout=2s --start-period=3s --retries=10 \
+  CMD snmpget -v2c -c public -t 1 localhost 1.3.6.1.2.1.1.1.0 || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]

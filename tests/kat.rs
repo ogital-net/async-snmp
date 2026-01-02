@@ -8,7 +8,7 @@
 //! - RFC 6234: HMAC test vectors for SHA-1/SHA-2
 //! - RFC 3414 A.5: Key change vectors
 
-use async_snmp::testing::{decode, encode};
+use async_snmp::format::hex::{decode, encode};
 use async_snmp::v3::{AuthProtocol, LocalizedKey, PrivKey, PrivProtocol};
 
 /// RFC 3414 Appendix A.3.1: Password to Key using MD5

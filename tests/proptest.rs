@@ -1,14 +1,25 @@
-//! Property-based tests for BER codec round-trips.
+//! Property-based tests for async-snmp.
 //!
-//! Uses proptest to verify that encode(decode(x)) == x for all types.
+//! These tests exercise both the BER codec in isolation and the full protocol
+//! stack (Client -> UDP -> Agent -> Handler -> Agent -> UDP -> Client).
+//!
+//! High-level tests are more comprehensive: if client.get() returns the correct
+//! value for random inputs, the codec must work - but we also catch integration
+//! bugs that codec-only testing misses.
+
+mod common;
 
 use async_snmp::ber::{Decoder, EncodeBuf};
 use async_snmp::oid::Oid;
 use async_snmp::pdu::{GetBulkPdu, Pdu, PduType, TrapV1Pdu};
 use async_snmp::value::Value;
 use async_snmp::varbind::VarBind;
+use async_snmp::{Auth, Client, oid};
 use bytes::Bytes;
+use common::TestAgent;
 use proptest::prelude::*;
+use std::collections::BTreeMap;
+use tokio::runtime::Runtime;
 
 // =============================================================================
 // Arbitrary Implementations
@@ -54,13 +65,50 @@ fn arb_oid() -> impl Strategy<Value = Oid> {
     ]
 }
 
+/// Strategy for generating valid OIDs under the test subtree (1.3.6.1.99).
+/// These OIDs are guaranteed to be handled by the TestAgent.
+fn arb_test_oid() -> impl Strategy<Value = Oid> {
+    prop::collection::vec(any::<u32>(), 1..=10).prop_map(|rest| {
+        let mut arcs = vec![1, 3, 6, 1, 99];
+        arcs.extend(rest);
+        Oid::from_slice(&arcs)
+    })
+}
+
 /// Strategy for generating arbitrary byte data (for OctetString, Opaque).
 fn arb_bytes() -> impl Strategy<Value = Bytes> {
     prop::collection::vec(any::<u8>(), 0..=256).prop_map(Bytes::from)
 }
 
-/// Strategy for generating valid Value variants.
+/// Strategy for generating valid Value variants (excluding exception values
+/// which aren't typically stored/retrieved via SET/GET).
 fn arb_value() -> impl Strategy<Value = Value> {
+    prop_oneof![
+        // Integer: full i32 range
+        any::<i32>().prop_map(Value::Integer),
+        // OctetString: arbitrary bytes
+        arb_bytes().prop_map(Value::OctetString),
+        // Null
+        Just(Value::Null),
+        // ObjectIdentifier: valid OID
+        arb_oid().prop_map(Value::ObjectIdentifier),
+        // IpAddress: 4 bytes
+        any::<[u8; 4]>().prop_map(Value::IpAddress),
+        // Counter32: full u32 range
+        any::<u32>().prop_map(Value::Counter32),
+        // Gauge32: full u32 range
+        any::<u32>().prop_map(Value::Gauge32),
+        // TimeTicks: full u32 range
+        any::<u32>().prop_map(Value::TimeTicks),
+        // Opaque: arbitrary bytes
+        arb_bytes().prop_map(Value::Opaque),
+        // Counter64: full u64 range
+        any::<u64>().prop_map(Value::Counter64),
+    ]
+}
+
+/// Strategy for generating Value variants including exceptions (for BER tests).
+fn arb_value_with_exceptions() -> impl Strategy<Value = Value> {
     prop_oneof![
         // Integer: full i32 range
         any::<i32>().prop_map(Value::Integer),
@@ -91,7 +139,7 @@ fn arb_value() -> impl Strategy<Value = Value> {
 
 /// Strategy for generating VarBinds.
 fn arb_varbind() -> impl Strategy<Value = VarBind> {
-    (arb_oid(), arb_value()).prop_map(|(oid, value)| VarBind::new(oid, value))
+    (arb_oid(), arb_value_with_exceptions()).prop_map(|(oid, value)| VarBind::new(oid, value))
 }
 
 /// Strategy for generating a vector of VarBinds.
@@ -170,11 +218,162 @@ fn arb_trap_v1_pdu() -> impl Strategy<Value = TrapV1Pdu> {
 }
 
 // =============================================================================
-// Round-trip Property Tests
+// High-Level Property Tests (Full Protocol Stack)
 // =============================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
+    #![proptest_config(ProptestConfig::with_cases(500))]
+
+    /// Any valid Value round-trips through the full protocol stack.
+    #[test]
+    fn value_survives_full_protocol(value in arb_value()) {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let agent = TestAgent::with_data(BTreeMap::new()).await;
+            let test_oid = oid!(1, 3, 6, 1, 99, 1, 0);
+
+            // Set the value in the agent directly
+            agent.set(test_oid.clone(), value.clone());
+
+            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+                .connect()
+                .await
+                .unwrap();
+
+            let result = client.get(&test_oid).await.unwrap();
+
+            prop_assert_eq!(result.value, value);
+            Ok(())
+        })?;
+    }
+
+    /// Any valid OID under the test subtree is queryable.
+    #[test]
+    fn oid_queryable(oid in arb_test_oid()) {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let agent = TestAgent::with_data(BTreeMap::new()).await;
+            let value = Value::Integer(42);
+
+            agent.set(oid.clone(), value.clone());
+
+            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+                .connect()
+                .await
+                .unwrap();
+
+            let result = client.get(&oid).await.unwrap();
+
+            prop_assert_eq!(result.oid, oid);
+            prop_assert_eq!(result.value, value);
+            Ok(())
+        })?;
+    }
+
+    /// Multiple OIDs survive GET_MANY.
+    #[test]
+    fn values_survive_get_many(
+        values in prop::collection::vec(arb_value(), 1..20)
+    ) {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let agent = TestAgent::with_data(BTreeMap::new()).await;
+
+            // Insert values with sequential OIDs
+            let oids: Vec<Oid> = values.iter().enumerate()
+                .map(|(i, _)| oid!(1, 3, 6, 1, 99, 2, i as u32))
+                .collect();
+
+            for (oid, value) in oids.iter().zip(&values) {
+                agent.set(oid.clone(), value.clone());
+            }
+
+            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+                .connect()
+                .await
+                .unwrap();
+
+            let results = client.get_many(&oids).await.unwrap();
+
+            prop_assert_eq!(results.len(), values.len());
+            for (result, expected) in results.iter().zip(&values) {
+                prop_assert_eq!(&result.value, expected);
+            }
+            Ok(())
+        })?;
+    }
+
+    /// SET followed by GET returns the set value.
+    #[test]
+    fn set_then_get_round_trip(value in arb_value()) {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let agent = TestAgent::with_data(BTreeMap::new()).await;
+            let test_oid = oid!(1, 3, 6, 1, 99, 3, 0);
+
+            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+                .connect()
+                .await
+                .unwrap();
+
+            // SET the value via SNMP protocol
+            client.set(&test_oid, value.clone()).await.unwrap();
+
+            // GET it back
+            let result = client.get(&test_oid).await.unwrap();
+
+            prop_assert_eq!(result.value, value);
+            Ok(())
+        })?;
+    }
+
+    /// WALK returns values in OID order.
+    #[test]
+    fn walk_returns_sorted_oids(
+        values in prop::collection::vec(arb_value(), 2..10)
+    ) {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let agent = TestAgent::with_data(BTreeMap::new()).await;
+
+            // Insert values with sequential OIDs
+            for (i, value) in values.iter().enumerate() {
+                agent.set(oid!(1, 3, 6, 1, 99, 4, i as u32), value.clone());
+            }
+
+            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+                .connect()
+                .await
+                .unwrap();
+
+            let results = client
+                .walk(oid!(1, 3, 6, 1, 99, 4))
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+
+            prop_assert_eq!(results.len(), values.len());
+
+            // Results should be in OID order
+            let mut prev_oid: Option<Oid> = None;
+            for vb in results {
+                if let Some(prev) = &prev_oid {
+                    prop_assert!(vb.oid > *prev, "OIDs not in order");
+                }
+                prev_oid = Some(vb.oid);
+            }
+            Ok(())
+        })?;
+    }
+}
+
+// =============================================================================
+// Low-Level BER Round-trip Property Tests (Reduced case count)
+// =============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
 
     // -------------------------------------------------------------------------
     // OID round-trip tests
@@ -202,7 +401,7 @@ proptest! {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn value_ber_roundtrip(value in arb_value()) {
+    fn value_ber_roundtrip(value in arb_value_with_exceptions()) {
         let mut buf = EncodeBuf::new();
         value.encode(&mut buf);
         let bytes = buf.finish();
