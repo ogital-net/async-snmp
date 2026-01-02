@@ -1,11 +1,8 @@
 //! Property-based tests for async-snmp.
 //!
-//! These tests exercise both the BER codec in isolation and the full protocol
-//! stack (Client -> UDP -> Agent -> Handler -> Agent -> UDP -> Client).
-//!
-//! High-level tests are more comprehensive: if client.get() returns the correct
-//! value for random inputs, the codec must work - but we also catch integration
-//! bugs that codec-only testing misses.
+//! High-level tests exercise the full protocol stack with a shared TestAgent
+//! per test function (avoids socket exhaustion). Low-level tests validate BER
+//! codec round-trips in isolation.
 
 mod common;
 
@@ -14,12 +11,39 @@ use async_snmp::oid::Oid;
 use async_snmp::pdu::{GetBulkPdu, Pdu, PduType, TrapV1Pdu};
 use async_snmp::value::Value;
 use async_snmp::varbind::VarBind;
-use async_snmp::{Auth, Client, oid};
+use async_snmp::{Auth, Client};
 use bytes::Bytes;
 use common::TestAgent;
 use proptest::prelude::*;
-use std::collections::BTreeMap;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::runtime::Runtime;
+
+// =============================================================================
+// Shared Test Environment
+// =============================================================================
+
+struct SharedEnv {
+    runtime: Runtime,
+    agent: TestAgent,
+    case_counter: AtomicU32,
+}
+
+impl SharedEnv {
+    fn new() -> Self {
+        let runtime = Runtime::new().expect("failed to create runtime");
+        let agent = runtime.block_on(TestAgent::new());
+        Self {
+            runtime,
+            agent,
+            case_counter: AtomicU32::new(0),
+        }
+    }
+
+    fn next_case_id(&self) -> u32 {
+        self.case_counter.fetch_add(1, Ordering::Relaxed)
+    }
+}
 
 // =============================================================================
 // Arbitrary Implementations
@@ -221,74 +245,70 @@ fn arb_trap_v1_pdu() -> impl Strategy<Value = TrapV1Pdu> {
 // High-Level Property Tests (Full Protocol Stack)
 // =============================================================================
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(500))]
+static SHARED_ENV: OnceLock<SharedEnv> = OnceLock::new();
 
-    /// Any valid Value round-trips through the full protocol stack.
+fn env() -> &'static SharedEnv {
+    SHARED_ENV.get_or_init(SharedEnv::new)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(3000))]
+
     #[test]
     fn value_survives_full_protocol(value in arb_value()) {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let agent = TestAgent::with_data(BTreeMap::new()).await;
-            let test_oid = oid!(1, 3, 6, 1, 99, 1, 0);
+        let env = env();
+        let case_id = env.next_case_id();
+        let test_oid = Oid::from_slice(&[1, 3, 6, 1, 99, 1, case_id]);
 
-            // Set the value in the agent directly
-            agent.set(test_oid.clone(), value.clone());
+        env.agent.set(test_oid.clone(), value.clone());
 
-            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+        env.runtime.block_on(async {
+            let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
                 .connect()
                 .await
                 .unwrap();
 
             let result = client.get(&test_oid).await.unwrap();
-
             prop_assert_eq!(result.value, value);
             Ok(())
         })?;
     }
 
-    /// Any valid OID under the test subtree is queryable.
     #[test]
     fn oid_queryable(oid in arb_test_oid()) {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let agent = TestAgent::with_data(BTreeMap::new()).await;
-            let value = Value::Integer(42);
+        let env = env();
+        let value = Value::Integer(42);
 
-            agent.set(oid.clone(), value.clone());
+        env.agent.set(oid.clone(), value.clone());
 
-            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+        env.runtime.block_on(async {
+            let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
                 .connect()
                 .await
                 .unwrap();
 
             let result = client.get(&oid).await.unwrap();
-
             prop_assert_eq!(result.oid, oid);
             prop_assert_eq!(result.value, value);
             Ok(())
         })?;
     }
 
-    /// Multiple OIDs survive GET_MANY.
     #[test]
-    fn values_survive_get_many(
-        values in prop::collection::vec(arb_value(), 1..20)
-    ) {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let agent = TestAgent::with_data(BTreeMap::new()).await;
+    fn values_survive_get_many(values in prop::collection::vec(arb_value(), 1..20)) {
+        let env = env();
+        let case_id = env.next_case_id();
 
-            // Insert values with sequential OIDs
-            let oids: Vec<Oid> = values.iter().enumerate()
-                .map(|(i, _)| oid!(1, 3, 6, 1, 99, 2, i as u32))
-                .collect();
+        let oids: Vec<Oid> = values.iter().enumerate()
+            .map(|(i, _)| Oid::from_slice(&[1, 3, 6, 1, 99, 2, case_id, i as u32]))
+            .collect();
 
-            for (oid, value) in oids.iter().zip(&values) {
-                agent.set(oid.clone(), value.clone());
-            }
+        for (oid, value) in oids.iter().zip(&values) {
+            env.agent.set(oid.clone(), value.clone());
+        }
 
-            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+        env.runtime.block_on(async {
+            let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
                 .connect()
                 .await
                 .unwrap();
@@ -303,59 +323,29 @@ proptest! {
         })?;
     }
 
-    /// SET followed by GET returns the set value.
     #[test]
-    fn set_then_get_round_trip(value in arb_value()) {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let agent = TestAgent::with_data(BTreeMap::new()).await;
-            let test_oid = oid!(1, 3, 6, 1, 99, 3, 0);
+    fn walk_returns_sorted_oids(values in prop::collection::vec(arb_value(), 2..10)) {
+        let env = env();
+        let case_id = env.next_case_id();
 
-            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
+        for (i, value) in values.iter().enumerate() {
+            env.agent.set(
+                Oid::from_slice(&[1, 3, 6, 1, 99, 4, case_id, i as u32]),
+                value.clone(),
+            );
+        }
+
+        env.runtime.block_on(async {
+            let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
                 .connect()
                 .await
                 .unwrap();
 
-            // SET the value via SNMP protocol
-            client.set(&test_oid, value.clone()).await.unwrap();
-
-            // GET it back
-            let result = client.get(&test_oid).await.unwrap();
-
-            prop_assert_eq!(result.value, value);
-            Ok(())
-        })?;
-    }
-
-    /// WALK returns values in OID order.
-    #[test]
-    fn walk_returns_sorted_oids(
-        values in prop::collection::vec(arb_value(), 2..10)
-    ) {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let agent = TestAgent::with_data(BTreeMap::new()).await;
-
-            // Insert values with sequential OIDs
-            for (i, value) in values.iter().enumerate() {
-                agent.set(oid!(1, 3, 6, 1, 99, 4, i as u32), value.clone());
-            }
-
-            let client = Client::builder(agent.addr().to_string(), Auth::v2c("public"))
-                .connect()
-                .await
-                .unwrap();
-
-            let results = client
-                .walk(oid!(1, 3, 6, 1, 99, 4))
-                .unwrap()
-                .collect()
-                .await
-                .unwrap();
+            let walk_root = Oid::from_slice(&[1, 3, 6, 1, 99, 4, case_id]);
+            let results = client.walk(walk_root).unwrap().collect().await.unwrap();
 
             prop_assert_eq!(results.len(), values.len());
 
-            // Results should be in OID order
             let mut prev_oid: Option<Oid> = None;
             for vb in results {
                 if let Some(prev) = &prev_oid {
@@ -368,12 +358,36 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(500))]
+
+    #[test]
+    fn set_then_get_round_trip(value in arb_value()) {
+        let env = env();
+        let case_id = env.next_case_id();
+        let test_oid = Oid::from_slice(&[1, 3, 6, 1, 99, 3, case_id]);
+
+        env.runtime.block_on(async {
+            let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
+                .connect()
+                .await
+                .unwrap();
+
+            client.set(&test_oid, value.clone()).await.unwrap();
+            let result = client.get(&test_oid).await.unwrap();
+
+            prop_assert_eq!(result.value, value);
+            Ok(())
+        })?;
+    }
+}
+
 // =============================================================================
-// Low-Level BER Round-trip Property Tests (Reduced case count)
+// Low-Level BER Round-trip Property Tests
 // =============================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+    #![proptest_config(ProptestConfig::with_cases(2000))]
 
     // -------------------------------------------------------------------------
     // OID round-trip tests
