@@ -102,7 +102,7 @@ const DEFAULT_MAX_ALLOCATION_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 /// Configuration options for [`TcpTransport`].
 ///
 /// For advanced TCP socket configuration (TCP_NODELAY, keepalive, buffer sizes,
-/// etc.), use [`TcpTransport::from_stream()`] with a pre-configured `TcpStream`.
+/// etc.), use [`TcpTransport::from_socket()`] with a pre-configured `TcpSocket`.
 #[derive(Debug, Clone)]
 pub struct TcpOptions {
     /// Maximum size of incoming messages to accept.
@@ -125,7 +125,7 @@ impl Default for TcpOptions {
 /// Builder for [`TcpTransport`].
 ///
 /// For advanced TCP socket configuration (TCP_NODELAY, keepalive, buffer sizes,
-/// etc.), use [`TcpTransport::from_stream()`] with a pre-configured `TcpStream`.
+/// etc.), use [`TcpTransport::from_socket()`] with a pre-configured `TcpSocket`.
 ///
 /// # Example
 ///
@@ -281,7 +281,7 @@ impl TcpTransport {
     /// Connect to a target address with default options.
     ///
     /// For custom configuration, use [`builder()`](Self::builder) or
-    /// [`from_stream()`](Self::from_stream).
+    /// [`from_socket()`](Self::from_socket).
     pub async fn connect(target: SocketAddr) -> Result<Self> {
         Self::builder().connect(target).await
     }
