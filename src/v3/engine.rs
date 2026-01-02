@@ -37,6 +37,13 @@ use crate::v3::UsmSecurityParams;
 /// Time window in seconds (RFC 3414 Section 2.2.3).
 pub const TIME_WINDOW: u32 = 150;
 
+/// Maximum valid snmpEngineTime value (RFC 3414 Section 2.2.1).
+///
+/// Per RFC 3414, snmpEngineTime is a 31-bit value (0..2147483647).
+/// When the value reaches this maximum, the authoritative engine should
+/// reset it to zero and increment snmpEngineBoots.
+pub const MAX_ENGINE_TIME: u32 = 2147483647;
+
 /// Default msgMaxSize for UDP transport (65535 - 20 IPv4 - 8 UDP = 65507).
 pub const DEFAULT_MSG_MAX_SIZE: u32 = 65507;
 
@@ -158,9 +165,12 @@ impl EngineState {
     /// Get the estimated current engine time.
     ///
     /// This adds elapsed local time to the synced engine time.
+    /// Per RFC 3414 Section 2.2.1, the result is capped at MAX_ENGINE_TIME (2^31-1).
     pub fn estimated_time(&self) -> u32 {
         let elapsed = self.synced_at.elapsed().as_secs() as u32;
-        self.engine_time.saturating_add(elapsed)
+        self.engine_time
+            .saturating_add(elapsed)
+            .min(MAX_ENGINE_TIME)
     }
 
     /// Update time from a response.
@@ -1068,5 +1078,79 @@ mod tests {
 
         // DEFAULT_MSG_MAX_SIZE is the maximum UDP payload (65507)
         assert_eq!(state.msg_max_size, DEFAULT_MSG_MAX_SIZE);
+    }
+
+    // ========================================================================
+    // Engine Time Overflow Tests (RFC 3414 Section 2.2.1)
+    // ========================================================================
+    //
+    // Per RFC 3414, snmpEngineTime is a 31-bit value (0..2147483647).
+    // When the time value would exceed this, it must not go beyond MAX_ENGINE_TIME.
+
+    /// Test that estimated_time caps at MAX_ENGINE_TIME (2^31-1).
+    ///
+    /// Per RFC 3414 Section 2.2.1, snmpEngineTime is 31-bit (0..2147483647).
+    /// If time would exceed this value, it should cap at MAX_ENGINE_TIME rather
+    /// than continuing to u32::MAX.
+    #[test]
+    fn test_estimated_time_caps_at_max_engine_time() {
+        // Create state with engine_time near the maximum
+        let state = EngineState::new(Bytes::from_static(b"engine"), 1, MAX_ENGINE_TIME - 10);
+
+        // Even though we're adding elapsed time, result should never exceed MAX_ENGINE_TIME
+        let estimated = state.estimated_time();
+        assert!(
+            estimated <= MAX_ENGINE_TIME,
+            "estimated_time() should never exceed MAX_ENGINE_TIME ({}), got {}",
+            MAX_ENGINE_TIME,
+            estimated
+        );
+    }
+
+    /// Test that estimated_time at MAX_ENGINE_TIME stays at MAX_ENGINE_TIME.
+    ///
+    /// When engine_time is already at the maximum, adding more elapsed time
+    /// should not increase it further.
+    #[test]
+    fn test_estimated_time_at_max_stays_at_max() {
+        let state = EngineState::new(Bytes::from_static(b"engine"), 1, MAX_ENGINE_TIME);
+
+        // Should stay at MAX_ENGINE_TIME
+        let estimated = state.estimated_time();
+        assert_eq!(
+            estimated, MAX_ENGINE_TIME,
+            "estimated_time() at max should stay at MAX_ENGINE_TIME"
+        );
+    }
+
+    /// Test that engine_time values beyond MAX_ENGINE_TIME are invalid.
+    ///
+    /// This verifies the constant value is correct per RFC 3414.
+    #[test]
+    fn test_max_engine_time_constant() {
+        // RFC 3414 specifies 31-bit (0..2147483647), which is i32::MAX
+        assert_eq!(MAX_ENGINE_TIME, 2147483647);
+        assert_eq!(MAX_ENGINE_TIME, i32::MAX as u32);
+    }
+
+    /// Test that normal time estimation works below MAX_ENGINE_TIME.
+    ///
+    /// For typical time values well below the maximum, estimation should
+    /// work normally without artificial capping.
+    #[test]
+    fn test_estimated_time_normal_operation() {
+        let state = EngineState::new(Bytes::from_static(b"engine"), 1, 1000);
+
+        // For a fresh state, elapsed should be ~0, so estimated should be ~engine_time
+        let estimated = state.estimated_time();
+        assert!(
+            estimated >= 1000,
+            "estimated_time() should be at least engine_time"
+        );
+        // Should not hit the cap
+        assert!(
+            estimated < MAX_ENGINE_TIME,
+            "Normal time values should not hit MAX_ENGINE_TIME cap"
+        );
     }
 }

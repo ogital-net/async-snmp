@@ -16,8 +16,8 @@ mod usm;
 
 pub use auth::{LocalizedKey, MasterKey, MasterKeys, extend_key};
 pub use engine::{
-    DEFAULT_MSG_MAX_SIZE, EngineCache, EngineState, TIME_WINDOW, parse_discovery_response,
-    parse_discovery_response_with_limits,
+    DEFAULT_MSG_MAX_SIZE, EngineCache, EngineState, MAX_ENGINE_TIME, TIME_WINDOW,
+    parse_discovery_response, parse_discovery_response_with_limits,
 };
 pub use engine::{
     is_decryption_error_report, is_not_in_time_window_report, is_unknown_engine_id_report,
