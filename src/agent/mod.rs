@@ -85,6 +85,10 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
+use std::io::IoSliceMut;
+
+use quinn_udp::{RecvMeta, Transmit, UdpSockRef, UdpSocketState};
+
 use crate::ber::Decoder;
 use crate::error::{DecodeErrorKind, Error, ErrorStatus, Result};
 use crate::handler::{GetNextResult, GetResult, MibHandler, RequestContext};
@@ -500,6 +504,12 @@ impl AgentBuilder {
             source: e,
         })?;
 
+        let socket_state =
+            UdpSocketState::new(UdpSockRef::from(&socket)).map_err(|e| Error::Io {
+                target: Some(bind_addr),
+                source: e,
+            })?;
+
         // Generate default engine ID if not provided
         let engine_id = self.engine_id.unwrap_or_else(|| {
             // RFC 3411 format: enterprise number + format + local identifier
@@ -527,6 +537,7 @@ impl AgentBuilder {
         Ok(Agent {
             inner: Arc::new(AgentInner {
                 socket: Arc::new(socket),
+                socket_state,
                 local_addr,
                 communities: self.communities,
                 usm_users: self.usm_users,
@@ -557,6 +568,7 @@ impl Default for AgentBuilder {
 /// Inner state shared across agent clones.
 pub(crate) struct AgentInner {
     pub(crate) socket: Arc<UdpSocket>,
+    pub(crate) socket_state: UdpSocketState,
     pub(crate) local_addr: SocketAddr,
     pub(crate) communities: Vec<Vec<u8>>,
     pub(crate) usm_users: HashMap<Bytes, UsmUserConfig>,
@@ -674,12 +686,9 @@ impl Agent {
         let mut buf = vec![0u8; 65535];
 
         loop {
-            let (len, source) = tokio::select! {
-                result = self.inner.socket.recv_from(&mut buf) => {
-                    result.map_err(|e| Error::Io {
-                        target: Some(self.inner.local_addr),
-                        source: e,
-                    })?
+            let recv_meta = tokio::select! {
+                result = self.recv_packet(&mut buf) => {
+                    result?
                 }
                 _ = self.inner.cancel.cancelled() => {
                     tracing::info!("agent shutdown requested");
@@ -687,40 +696,86 @@ impl Agent {
                 }
             };
 
-            let data = Bytes::copy_from_slice(&buf[..len]);
-
-            // Clone agent for the spawned task
+            let data = Bytes::copy_from_slice(&buf[..recv_meta.len]);
             let agent = self.clone();
 
-            // Acquire concurrency permit if configured
             let permit = if let Some(ref sem) = self.inner.concurrency_limit {
                 Some(sem.clone().acquire_owned().await.expect("semaphore closed"))
             } else {
                 None
             };
 
-            // Spawn task to handle request concurrently
             tokio::spawn(async move {
-                // Update engine time
                 agent.update_engine_time();
 
-                match agent.handle_request(data, source).await {
+                match agent.handle_request(data, recv_meta.addr).await {
                     Ok(Some(response_bytes)) => {
-                        if let Err(e) = agent.inner.socket.send_to(&response_bytes, source).await {
-                            tracing::warn!(snmp.source = %source, error = %e, "failed to send response");
+                        if let Err(e) = agent.send_response(&response_bytes, &recv_meta).await {
+                            tracing::warn!(snmp.source = %recv_meta.addr, error = %e, "failed to send response");
                         }
                     }
-                    Ok(None) => {
-                        // No response needed (e.g., invalid message)
-                    }
+                    Ok(None) => {}
                     Err(e) => {
-                        tracing::warn!(snmp.source = %source, error = %e, "error handling request");
+                        tracing::warn!(snmp.source = %recv_meta.addr, error = %e, "error handling request");
                     }
                 }
 
-                // Permit dropped here, releasing the slot
                 drop(permit);
             });
+        }
+    }
+
+    async fn recv_packet(&self, buf: &mut [u8]) -> Result<RecvMeta> {
+        let mut iov = [IoSliceMut::new(buf)];
+        let mut meta = [RecvMeta::default()];
+
+        loop {
+            self.inner.socket.readable().await.map_err(|e| Error::Io {
+                target: Some(self.inner.local_addr),
+                source: e,
+            })?;
+
+            let result = self.inner.socket.try_io(tokio::io::Interest::READABLE, || {
+                let sref = UdpSockRef::from(&*self.inner.socket);
+                self.inner.socket_state.recv(sref, &mut iov, &mut meta)
+            });
+
+            match result {
+                Ok(n) if n > 0 => return Ok(meta[0]),
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => {
+                    return Err(Error::Io {
+                        target: Some(self.inner.local_addr),
+                        source: e,
+                    });
+                }
+            }
+        }
+    }
+
+    async fn send_response(&self, data: &[u8], recv_meta: &RecvMeta) -> std::io::Result<()> {
+        let transmit = Transmit {
+            destination: recv_meta.addr,
+            ecn: None,
+            contents: data,
+            segment_size: None,
+            src_ip: recv_meta.dst_ip,
+        };
+
+        loop {
+            self.inner.socket.writable().await?;
+
+            let result = self.inner.socket.try_io(tokio::io::Interest::WRITABLE, || {
+                let sref = UdpSockRef::from(&*self.inner.socket);
+                self.inner.socket_state.try_send(sref, &transmit)
+            });
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(e),
+            }
         }
     }
 

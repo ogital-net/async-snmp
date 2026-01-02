@@ -11,6 +11,7 @@ use async_snmp::oid::Oid;
 use async_snmp::pdu::{GetBulkPdu, Pdu, PduType, TrapV1Pdu};
 use async_snmp::value::Value;
 use async_snmp::varbind::VarBind;
+use async_snmp::transport::UdpTransport;
 use async_snmp::{Auth, Client};
 use bytes::Bytes;
 use common::TestAgent;
@@ -26,6 +27,7 @@ use tokio::runtime::Runtime;
 struct SharedEnv {
     runtime: Runtime,
     agent: TestAgent,
+    transport: UdpTransport,
     case_counter: AtomicU32,
 }
 
@@ -33,9 +35,11 @@ impl SharedEnv {
     fn new() -> Self {
         let runtime = Runtime::new().expect("failed to create runtime");
         let agent = runtime.block_on(TestAgent::new());
+        let transport = runtime.block_on(UdpTransport::bind("[::]:0")).expect("bind transport");
         Self {
             runtime,
             agent,
+            transport,
             case_counter: AtomicU32::new(0),
         }
     }
@@ -264,8 +268,7 @@ proptest! {
 
         env.runtime.block_on(async {
             let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
-                .connect()
-                .await
+                .build_with(&env.transport)
                 .unwrap();
 
             let result = client.get(&test_oid).await.unwrap();
@@ -283,8 +286,7 @@ proptest! {
 
         env.runtime.block_on(async {
             let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
-                .connect()
-                .await
+                .build_with(&env.transport)
                 .unwrap();
 
             let result = client.get(&oid).await.unwrap();
@@ -309,8 +311,7 @@ proptest! {
 
         env.runtime.block_on(async {
             let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
-                .connect()
-                .await
+                .build_with(&env.transport)
                 .unwrap();
 
             let results = client.get_many(&oids).await.unwrap();
@@ -337,8 +338,7 @@ proptest! {
 
         env.runtime.block_on(async {
             let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
-                .connect()
-                .await
+                .build_with(&env.transport)
                 .unwrap();
 
             let walk_root = Oid::from_slice(&[1, 3, 6, 1, 99, 4, case_id]);
@@ -369,8 +369,7 @@ proptest! {
 
         env.runtime.block_on(async {
             let client = Client::builder(env.agent.addr().to_string(), Auth::v2c("public"))
-                .connect()
-                .await
+                .build_with(&env.transport)
                 .unwrap();
 
             client.set(&test_oid, value.clone()).await.unwrap();
