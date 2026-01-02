@@ -172,10 +172,10 @@ impl MsgGlobalData {
     /// Decode from decoder.
     ///
     /// Validates that:
-    /// - `msgMaxSize` is at least 484 octets (RFC 3412 Section 6.1)
+    /// - `msgID` is in range 0..2147483647 (RFC 3412 HeaderData)
+    /// - `msgMaxSize` is in range 484..2147483647 (RFC 3412 HeaderData)
     /// - `msgSecurityModel` is a known value (currently only USM=3)
     pub fn decode(decoder: &mut Decoder) -> Result<Self> {
-        /// RFC 3412 minimum msgMaxSize (484 octets).
         const MSG_MAX_SIZE_MINIMUM: i32 = 484;
 
         let mut seq = decoder.read_sequence()?;
@@ -183,7 +183,25 @@ impl MsgGlobalData {
         let msg_id = seq.read_integer()?;
         let msg_max_size = seq.read_integer()?;
 
-        // RFC 3412 Section 6.1: msgMaxSize MUST be at least 484
+        // RFC 3412 HeaderData: msgID INTEGER (0..2147483647)
+        if msg_id < 0 {
+            return Err(Error::decode(
+                seq.offset(),
+                DecodeErrorKind::InvalidMsgId { value: msg_id },
+            ));
+        }
+
+        // RFC 3412 HeaderData: msgMaxSize INTEGER (484..2147483647)
+        // Negative values indicate the sender encoded a value > 2^31-1
+        if msg_max_size < 0 {
+            return Err(Error::decode(
+                seq.offset(),
+                DecodeErrorKind::MsgMaxSizeTooLarge {
+                    value: msg_max_size,
+                },
+            ));
+        }
+
         if msg_max_size < MSG_MAX_SIZE_MINIMUM {
             return Err(Error::decode(
                 seq.offset(),
@@ -673,5 +691,123 @@ mod tests {
         let decoded = MsgGlobalData::decode(&mut decoder).unwrap();
 
         assert_eq!(decoded.msg_security_model, SecurityModel::Usm);
+    }
+
+    // RFC 3412 bounds tests for msgID and msgMaxSize
+    //
+    // RFC 3412 HeaderData definition specifies:
+    //   msgID INTEGER (0..2147483647)
+    //   msgMaxSize INTEGER (484..2147483647)
+    //
+    // Values outside these ranges should be rejected.
+
+    #[test]
+    fn test_msg_global_data_rejects_negative_msg_id() {
+        // RFC 3412: msgID must be in range [0..2147483647]
+        // Negative values should be rejected
+        let mut buf = EncodeBuf::new();
+        buf.push_sequence(|buf| {
+            buf.push_integer(3); // USM security model
+            buf.push_octet_string(&[0x04]); // reportable, noAuthNoPriv
+            buf.push_integer(1472); // valid msg_max_size
+            buf.push_integer(-1); // negative msg_id
+        });
+        let encoded = buf.finish();
+
+        let mut decoder = Decoder::new(encoded);
+        let result = MsgGlobalData::decode(&mut decoder);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Decode {
+                kind: DecodeErrorKind::InvalidMsgId { value },
+                ..
+            } => {
+                assert_eq!(value, -1);
+            }
+            e => panic!("expected InvalidMsgId error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_msg_global_data_rejects_negative_msg_max_size() {
+        // RFC 3412: msgMaxSize must be in range [484..2147483647]
+        // Negative values (from signed integer interpretation) should be rejected
+        let mut buf = EncodeBuf::new();
+        buf.push_sequence(|buf| {
+            buf.push_integer(3); // USM security model
+            buf.push_octet_string(&[0x04]); // reportable, noAuthNoPriv
+            buf.push_integer(-1); // negative msg_max_size (would be > 2^31-1 unsigned)
+            buf.push_integer(100); // valid msg_id
+        });
+        let encoded = buf.finish();
+
+        let mut decoder = Decoder::new(encoded);
+        let result = MsgGlobalData::decode(&mut decoder);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Decode {
+                kind: DecodeErrorKind::MsgMaxSizeTooLarge { value },
+                ..
+            } => {
+                assert_eq!(value, -1);
+            }
+            e => panic!("expected MsgMaxSizeTooLarge error, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_msg_global_data_accepts_msg_id_at_zero() {
+        // RFC 3412: msgID 0 is at the lower bound, should be accepted
+        let mut buf = EncodeBuf::new();
+        buf.push_sequence(|buf| {
+            buf.push_integer(3); // USM
+            buf.push_octet_string(&[0x04]); // reportable, noAuthNoPriv
+            buf.push_integer(1472); // valid msg_max_size
+            buf.push_integer(0); // msg_id at lower bound
+        });
+        let encoded = buf.finish();
+
+        let mut decoder = Decoder::new(encoded);
+        let decoded = MsgGlobalData::decode(&mut decoder).unwrap();
+
+        assert_eq!(decoded.msg_id, 0);
+    }
+
+    #[test]
+    fn test_msg_global_data_accepts_msg_id_at_maximum() {
+        // RFC 3412: msgID 2147483647 is at the upper bound, should be accepted
+        let mut buf = EncodeBuf::new();
+        buf.push_sequence(|buf| {
+            buf.push_integer(3); // USM
+            buf.push_octet_string(&[0x04]); // reportable, noAuthNoPriv
+            buf.push_integer(1472); // valid msg_max_size
+            buf.push_integer(i32::MAX); // msg_id at upper bound (2147483647)
+        });
+        let encoded = buf.finish();
+
+        let mut decoder = Decoder::new(encoded);
+        let decoded = MsgGlobalData::decode(&mut decoder).unwrap();
+
+        assert_eq!(decoded.msg_id, i32::MAX);
+    }
+
+    #[test]
+    fn test_msg_global_data_accepts_msg_max_size_at_maximum() {
+        // RFC 3412: msgMaxSize 2147483647 is at the upper bound, should be accepted
+        let mut buf = EncodeBuf::new();
+        buf.push_sequence(|buf| {
+            buf.push_integer(3); // USM
+            buf.push_octet_string(&[0x04]); // reportable, noAuthNoPriv
+            buf.push_integer(i32::MAX); // msg_max_size at upper bound (2147483647)
+            buf.push_integer(100); // valid msg_id
+        });
+        let encoded = buf.finish();
+
+        let mut decoder = Decoder::new(encoded);
+        let decoded = MsgGlobalData::decode(&mut decoder).unwrap();
+
+        assert_eq!(decoded.msg_max_size, i32::MAX);
     }
 }

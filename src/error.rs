@@ -267,6 +267,10 @@ pub enum DecodeErrorKind {
     UnknownSecurityModel(i32),
     /// msgMaxSize below RFC 3412 minimum (484 octets).
     MsgMaxSizeTooSmall { value: i32, minimum: i32 },
+    /// msgMaxSize above RFC 3412 maximum (2147483647).
+    MsgMaxSizeTooLarge { value: i32 },
+    /// msgID outside RFC 3412 range (0..2147483647).
+    InvalidMsgId { value: i32 },
     /// NULL with non-zero length.
     InvalidNull,
     /// Expected plaintext, got encrypted.
@@ -313,6 +317,12 @@ impl std::fmt::Display for DecodeErrorKind {
             Self::UnknownSecurityModel(m) => write!(f, "unknown security model: {}", m),
             Self::MsgMaxSizeTooSmall { value, minimum } => {
                 write!(f, "msgMaxSize {} below RFC 3412 minimum {}", value, minimum)
+            }
+            Self::MsgMaxSizeTooLarge { value } => {
+                write!(f, "msgMaxSize {} above RFC 3412 maximum 2147483647", value)
+            }
+            Self::InvalidMsgId { value } => {
+                write!(f, "msgID {} outside RFC 3412 range 0..2147483647", value)
             }
             Self::InvalidNull => write!(f, "NULL with non-zero length"),
             Self::UnexpectedEncryption => write!(f, "expected plaintext scoped PDU"),
