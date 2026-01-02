@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-02
+
+### Added
+
+- Agent concurrent request processing with semaphore-based limiting and graceful shutdown via `CancellationToken`
+- `View::check_subtree()` for 3-state access detection (included/excluded/ambiguous)
+- Blumenthal key extension (`KeyExtension::Blumenthal`) for AES-192/256 interoperability with net-snmp
+- `Transport::max_message_size()` for transport-aware msgMaxSize capping
+- IP_PKTINFO support via `quinn-udp` for correct source IP on multi-homed agents
+
+### Changed
+
+- VACM access selection implements full RFC 3415 preference order (securityModel, contextMatch, contextPrefix length, securityLevel)
+- SNMPv3 generates fresh msgID on each retry attempt per RFC 3412 Section 6.2
+- Request IDs masked to 31 bits for RFC 1157/3412 compliance
+- Agent-reported msgMaxSize capped to transport limit
+
+### Fixed
+
+- msgID and msgMaxSize bounds validation per RFC 3412 HeaderData definition
+
+### Removed
+
+- Unused dependencies and dead code
+
 ## [0.2.0] - 2026-01-01
 
 ### Changed
@@ -78,7 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zero-copy BER encoding/decoding
 - CLI utilities: `asnmp-get`, `asnmp-walk`, `asnmp-set`
 
-[Unreleased]: https://github.com/async-snmp/async-snmp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/async-snmp/async-snmp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/async-snmp/async-snmp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/async-snmp/async-snmp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/async-snmp/async-snmp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/async-snmp/async-snmp/releases/tag/v0.1.1
