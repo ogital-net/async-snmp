@@ -14,6 +14,131 @@ use crate::error::{DecodeErrorKind, Error, Result};
 /// decode layer while still being generous enough for any legitimate use case.
 pub const MAX_LENGTH: usize = 0x200000; // 2MB
 
+/// Returns the number of bytes needed to encode a length value in BER.
+///
+/// Uses short form (1 byte) for lengths <= 127, long form otherwise.
+#[inline]
+pub(crate) const fn length_encoded_len(len: usize) -> usize {
+    if len <= 127 {
+        1
+    } else if len <= 0xFF {
+        2
+    } else if len <= 0xFFFF {
+        3
+    } else if len <= 0xFFFFFF {
+        4
+    } else {
+        5
+    }
+}
+
+/// Returns the number of bytes needed for base-128 variable-length encoding.
+///
+/// Used for OID subidentifier encoding (X.690 Section 8.19.2).
+#[inline]
+pub(crate) const fn base128_len(value: u32) -> usize {
+    if value == 0 {
+        return 1;
+    }
+    // Count 7-bit groups needed: ceil(log2(value+1) / 7)
+    // For u32, this is at most 5 bytes
+    if value < 0x80 {
+        1
+    } else if value < 0x4000 {
+        2
+    } else if value < 0x200000 {
+        3
+    } else if value < 0x10000000 {
+        4
+    } else {
+        5
+    }
+}
+
+/// Returns the number of content bytes needed to encode a signed i32 in BER.
+#[inline]
+pub(crate) const fn integer_content_len(value: i32) -> usize {
+    let bytes = value.to_be_bytes();
+
+    if value >= 0 {
+        // For positive/zero, skip leading 0x00 bytes (but keep one if next byte has MSB set)
+        if bytes[0] != 0 {
+            4
+        } else if bytes[1] != 0 || bytes[2] & 0x80 != 0 {
+            if bytes[1] & 0x80 != 0 { 4 } else { 3 }
+        } else if bytes[2] != 0 || bytes[3] & 0x80 != 0 {
+            if bytes[2] & 0x80 != 0 { 3 } else { 2 }
+        } else {
+            1
+        }
+    } else {
+        // For negative, skip leading 0xFF bytes (but keep one if next byte has MSB clear)
+        if bytes[0] != 0xFF {
+            4
+        } else if bytes[1] != 0xFF || bytes[2] & 0x80 == 0 {
+            if bytes[1] & 0x80 == 0 { 4 } else { 3 }
+        } else if bytes[2] != 0xFF || bytes[3] & 0x80 == 0 {
+            if bytes[2] & 0x80 == 0 { 3 } else { 2 }
+        } else {
+            1
+        }
+    }
+}
+
+/// Returns the number of content bytes needed to encode an unsigned u32 in BER.
+#[inline]
+pub(crate) const fn unsigned32_content_len(value: u32) -> usize {
+    if value == 0 {
+        return 1;
+    }
+
+    let bytes = value.to_be_bytes();
+
+    // Skip leading zeros, but add a 0x00 prefix if MSB is set
+    if bytes[0] != 0 {
+        if bytes[0] & 0x80 != 0 { 5 } else { 4 }
+    } else if bytes[1] != 0 {
+        if bytes[1] & 0x80 != 0 { 4 } else { 3 }
+    } else if bytes[2] != 0 {
+        if bytes[2] & 0x80 != 0 { 3 } else { 2 }
+    } else if bytes[3] & 0x80 != 0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Returns the number of content bytes needed to encode an unsigned u64 in BER.
+#[inline]
+pub(crate) const fn unsigned64_content_len(value: u64) -> usize {
+    if value == 0 {
+        return 1;
+    }
+
+    let bytes = value.to_be_bytes();
+
+    // Find first non-zero byte and check if padding needed
+    if bytes[0] != 0 {
+        if bytes[0] & 0x80 != 0 { 9 } else { 8 }
+    } else if bytes[1] != 0 {
+        if bytes[1] & 0x80 != 0 { 8 } else { 7 }
+    } else if bytes[2] != 0 {
+        if bytes[2] & 0x80 != 0 { 7 } else { 6 }
+    } else if bytes[3] != 0 {
+        if bytes[3] & 0x80 != 0 { 6 } else { 5 }
+    } else if bytes[4] != 0 {
+        if bytes[4] & 0x80 != 0 { 5 } else { 4 }
+    } else if bytes[5] != 0 {
+        if bytes[5] & 0x80 != 0 { 4 } else { 3 }
+    } else if bytes[6] != 0 {
+        if bytes[6] & 0x80 != 0 { 3 } else { 2 }
+    } else if bytes[7] & 0x80 != 0 {
+        2
+    } else {
+        1
+    }
+}
+
 /// Encode a length value into the buffer (returns bytes in reverse order for prepending)
 ///
 /// Uses short form for lengths <= 127, long form otherwise.
@@ -180,6 +305,72 @@ mod tests {
     }
 
     #[test]
+    fn test_length_encoded_len() {
+        assert_eq!(length_encoded_len(0), 1);
+        assert_eq!(length_encoded_len(127), 1);
+        assert_eq!(length_encoded_len(128), 2);
+        assert_eq!(length_encoded_len(255), 2);
+        assert_eq!(length_encoded_len(256), 3);
+        assert_eq!(length_encoded_len(65535), 3);
+        assert_eq!(length_encoded_len(65536), 4);
+    }
+
+    #[test]
+    fn test_base128_len() {
+        assert_eq!(base128_len(0), 1);
+        assert_eq!(base128_len(127), 1);
+        assert_eq!(base128_len(128), 2);
+        assert_eq!(base128_len(16383), 2);
+        assert_eq!(base128_len(16384), 3);
+        assert_eq!(base128_len(2097151), 3);
+        assert_eq!(base128_len(2097152), 4);
+        assert_eq!(base128_len(268435455), 4);
+        assert_eq!(base128_len(268435456), 5);
+        assert_eq!(base128_len(u32::MAX), 5);
+    }
+
+    #[test]
+    fn test_integer_content_len() {
+        // Zero
+        assert_eq!(integer_content_len(0), 1);
+        // Small positive
+        assert_eq!(integer_content_len(1), 1);
+        assert_eq!(integer_content_len(127), 1);
+        // Needs padding byte
+        assert_eq!(integer_content_len(128), 2);
+        assert_eq!(integer_content_len(255), 2);
+        // Larger values
+        assert_eq!(integer_content_len(256), 2);
+        assert_eq!(integer_content_len(32767), 2);
+        assert_eq!(integer_content_len(32768), 3);
+        // Negative
+        assert_eq!(integer_content_len(-1), 1);
+        assert_eq!(integer_content_len(-128), 1);
+        assert_eq!(integer_content_len(-129), 2);
+        // Extremes
+        assert_eq!(integer_content_len(i32::MAX), 4);
+        assert_eq!(integer_content_len(i32::MIN), 4);
+    }
+
+    #[test]
+    fn test_unsigned32_content_len() {
+        assert_eq!(unsigned32_content_len(0), 1);
+        assert_eq!(unsigned32_content_len(127), 1);
+        assert_eq!(unsigned32_content_len(128), 2); // needs padding
+        assert_eq!(unsigned32_content_len(255), 2); // needs padding
+        assert_eq!(unsigned32_content_len(256), 2);
+        assert_eq!(unsigned32_content_len(u32::MAX), 5); // needs padding
+    }
+
+    #[test]
+    fn test_unsigned64_content_len() {
+        assert_eq!(unsigned64_content_len(0), 1);
+        assert_eq!(unsigned64_content_len(127), 1);
+        assert_eq!(unsigned64_content_len(128), 2); // needs padding
+        assert_eq!(unsigned64_content_len(u64::MAX), 9); // needs padding
+    }
+
+    #[test]
     fn test_max_length_enforced() {
         // Length at exactly MAX_LENGTH should succeed
         let max = MAX_LENGTH;
@@ -213,6 +404,61 @@ mod tests {
                 );
             }
             _ => panic!("Expected Decode error, got {:?}", err),
+        }
+    }
+
+    mod proptests {
+        use super::*;
+        use crate::ber::EncodeBuf;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn integer_content_len_matches_encoder(value: i32) {
+                // Encode the integer: tag (1 byte) + length (1 byte for i32) + content
+                let mut buf = EncodeBuf::new();
+                buf.push_integer(value);
+                let encoded_len = buf.len();
+                // For i32, content is at most 4 bytes, so length encoding is always 1 byte
+                // Total = 1 (tag) + 1 (length) + content_len
+                let actual_content_len = encoded_len - 2;
+                prop_assert_eq!(
+                    integer_content_len(value),
+                    actual_content_len,
+                    "Mismatch for value {}: computed={}, actual={}",
+                    value,
+                    integer_content_len(value),
+                    actual_content_len
+                );
+            }
+
+            #[test]
+            fn unsigned32_content_len_matches_encoder(value: u32) {
+                let mut buf = EncodeBuf::new();
+                buf.push_unsigned32(crate::ber::tag::application::COUNTER32, value);
+                let encoded_len = buf.len();
+                // For u32, content is at most 5 bytes, so length encoding is always 1 byte
+                let actual_content_len = encoded_len - 2;
+                prop_assert_eq!(
+                    unsigned32_content_len(value),
+                    actual_content_len,
+                    "Mismatch for value {}", value
+                );
+            }
+
+            #[test]
+            fn unsigned64_content_len_matches_encoder(value: u64) {
+                let mut buf = EncodeBuf::new();
+                buf.push_integer64(value);
+                let encoded_len = buf.len();
+                // For u64, content is at most 9 bytes, so length encoding is always 1 byte
+                let actual_content_len = encoded_len - 2;
+                prop_assert_eq!(
+                    unsigned64_content_len(value),
+                    actual_content_len,
+                    "Mismatch for value {}", value
+                );
+            }
         }
     }
 }

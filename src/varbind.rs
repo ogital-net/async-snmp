@@ -40,12 +40,18 @@ impl VarBind {
 
     /// Returns the exact encoded size of this VarBind in bytes.
     ///
-    /// This encodes the VarBind to a temporary buffer to determine the exact size.
+    /// Computes the size arithmetically without allocating.
     /// Useful for response size estimation in GETBULK processing.
     pub fn encoded_size(&self) -> usize {
-        let mut buf = EncodeBuf::new();
-        self.encode(&mut buf);
-        buf.len()
+        use crate::ber::length_encoded_len;
+
+        // VarBind is SEQUENCE { oid, value }
+        let oid_len = self.oid.ber_encoded_len();
+        let value_len = self.value.ber_encoded_len();
+        let content_len = oid_len + value_len;
+
+        // SEQUENCE tag (1) + length encoding + content
+        1 + length_encoded_len(content_len) + content_len
     }
 
     /// Decode from BER.
@@ -369,5 +375,142 @@ mod tests {
         let vb = VarBind::null(oid!(1, 3, 6, 1, 2, 1, 1, 1, 0));
         assert_eq!(vb.oid, oid!(1, 3, 6, 1, 2, 1, 1, 1, 0));
         assert_eq!(vb.value, Value::Null);
+    }
+
+    // ========================================================================
+    // VarBind::encoded_size() Tests
+    // ========================================================================
+
+    /// Helper to verify encoded_size() matches actual encoding length
+    fn verify_encoded_size(vb: &VarBind) {
+        let mut buf = EncodeBuf::new();
+        vb.encode(&mut buf);
+        let actual = buf.len();
+        let computed = vb.encoded_size();
+        assert_eq!(
+            computed, actual,
+            "encoded_size mismatch for {:?}: computed={}, actual={}",
+            vb, computed, actual
+        );
+    }
+
+    #[test]
+    fn test_encoded_size_null() {
+        verify_encoded_size(&VarBind::null(oid!(1, 3, 6, 1)));
+        verify_encoded_size(&VarBind::null(oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)));
+    }
+
+    #[test]
+    fn test_encoded_size_integer() {
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Integer(0)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Integer(127)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Integer(128)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Integer(-1)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Integer(i32::MAX)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Integer(i32::MIN)));
+    }
+
+    #[test]
+    fn test_encoded_size_octet_string() {
+        verify_encoded_size(&VarBind::new(
+            oid!(1, 3, 6, 1),
+            Value::OctetString(Bytes::new()),
+        ));
+        verify_encoded_size(&VarBind::new(
+            oid!(1, 3, 6, 1),
+            Value::OctetString(Bytes::from_static(b"hello world")),
+        ));
+        // Large string
+        verify_encoded_size(&VarBind::new(
+            oid!(1, 3, 6, 1),
+            Value::OctetString(Bytes::from(vec![0u8; 200])),
+        ));
+    }
+
+    #[test]
+    fn test_encoded_size_counters() {
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Counter32(0)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Counter32(u32::MAX)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Gauge32(12345)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::TimeTicks(99999)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Counter64(0)));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::Counter64(u64::MAX)));
+    }
+
+    #[test]
+    fn test_encoded_size_oid_value() {
+        verify_encoded_size(&VarBind::new(
+            oid!(1, 3, 6, 1, 2, 1, 1, 2, 0),
+            Value::ObjectIdentifier(oid!(1, 3, 6, 1, 4, 1, 9999)),
+        ));
+    }
+
+    #[test]
+    fn test_encoded_size_exceptions() {
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::NoSuchObject));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::NoSuchInstance));
+        verify_encoded_size(&VarBind::new(oid!(1, 3, 6, 1), Value::EndOfMibView));
+    }
+
+    #[test]
+    fn test_encoded_size_ip_address() {
+        verify_encoded_size(&VarBind::new(
+            oid!(1, 3, 6, 1),
+            Value::IpAddress([192, 168, 1, 1]),
+        ));
+    }
+
+    mod proptests {
+        use super::*;
+        use crate::oid::Oid;
+        use proptest::prelude::*;
+
+        fn arb_oid() -> impl Strategy<Value = Oid> {
+            // Generate valid OIDs: first arc 0-2, second arc 0-39 (for arc1 < 2) or 0-999
+            (0u32..3, 0u32..40, prop::collection::vec(0u32..10000, 0..8)).prop_map(
+                |(arc1, arc2, rest)| {
+                    let mut arcs = vec![arc1, arc2];
+                    arcs.extend(rest);
+                    Oid::from_slice(&arcs)
+                },
+            )
+        }
+
+        fn arb_value() -> impl Strategy<Value = Value> {
+            prop_oneof![
+                any::<i32>().prop_map(Value::Integer),
+                prop::collection::vec(any::<u8>(), 0..256)
+                    .prop_map(|v| Value::OctetString(Bytes::from(v))),
+                Just(Value::Null),
+                arb_oid().prop_map(Value::ObjectIdentifier),
+                any::<[u8; 4]>().prop_map(Value::IpAddress),
+                any::<u32>().prop_map(Value::Counter32),
+                any::<u32>().prop_map(Value::Gauge32),
+                any::<u32>().prop_map(Value::TimeTicks),
+                any::<u64>().prop_map(Value::Counter64),
+                Just(Value::NoSuchObject),
+                Just(Value::NoSuchInstance),
+                Just(Value::EndOfMibView),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn encoded_size_matches_encoding(
+                oid in arb_oid(),
+                value in arb_value()
+            ) {
+                let vb = VarBind::new(oid, value);
+                let mut buf = EncodeBuf::new();
+                vb.encode(&mut buf);
+                prop_assert_eq!(
+                    vb.encoded_size(),
+                    buf.len(),
+                    "encoded_size mismatch: computed={}, actual={}",
+                    vb.encoded_size(),
+                    buf.len()
+                );
+            }
+        }
     }
 }

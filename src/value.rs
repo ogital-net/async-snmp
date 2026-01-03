@@ -321,6 +321,44 @@ impl Value {
         )
     }
 
+    /// Returns the total BER-encoded length (tag + length + content).
+    pub(crate) fn ber_encoded_len(&self) -> usize {
+        use crate::ber::{
+            integer_content_len, length_encoded_len, unsigned32_content_len, unsigned64_content_len,
+        };
+
+        match self {
+            Value::Integer(v) => {
+                let content_len = integer_content_len(*v);
+                1 + length_encoded_len(content_len) + content_len
+            }
+            Value::OctetString(data) => {
+                let content_len = data.len();
+                1 + length_encoded_len(content_len) + content_len
+            }
+            Value::Null => 2, // tag + length(0)
+            Value::ObjectIdentifier(oid) => oid.ber_encoded_len(),
+            Value::IpAddress(_) => 6, // tag + length(4) + 4 bytes
+            Value::Counter32(v) | Value::Gauge32(v) | Value::TimeTicks(v) => {
+                let content_len = unsigned32_content_len(*v);
+                1 + length_encoded_len(content_len) + content_len
+            }
+            Value::Opaque(data) => {
+                let content_len = data.len();
+                1 + length_encoded_len(content_len) + content_len
+            }
+            Value::Counter64(v) => {
+                let content_len = unsigned64_content_len(*v);
+                1 + length_encoded_len(content_len) + content_len
+            }
+            Value::NoSuchObject | Value::NoSuchInstance | Value::EndOfMibView => 2, // tag + length(0)
+            Value::Unknown { data, .. } => {
+                let content_len = data.len();
+                1 + length_encoded_len(content_len) + content_len
+            }
+        }
+    }
+
     /// Format an OctetString or Opaque value using RFC 2579 DISPLAY-HINT.
     ///
     /// Returns `None` if this is not an OctetString or Opaque value.

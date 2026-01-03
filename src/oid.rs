@@ -384,6 +384,42 @@ impl Oid {
         Ok(self.to_ber())
     }
 
+    /// Returns the BER content length (excluding tag and length bytes).
+    pub(crate) fn ber_content_len(&self) -> usize {
+        use crate::ber::base128_len;
+
+        if self.arcs.is_empty() {
+            return 0;
+        }
+
+        let mut len = 0;
+
+        // First subidentifier (arc1*40 + arc2)
+        if self.arcs.len() >= 2 {
+            let first_subid = self.arcs[0] * 40 + self.arcs[1];
+            len += base128_len(first_subid);
+        } else {
+            // Single arc: arc1 * 40
+            let first_subid = self.arcs[0] * 40;
+            len += base128_len(first_subid);
+        }
+
+        // Remaining arcs
+        for &arc in self.arcs.iter().skip(2) {
+            len += base128_len(arc);
+        }
+
+        len
+    }
+
+    /// Returns the total BER-encoded length (tag + length + content).
+    pub(crate) fn ber_encoded_len(&self) -> usize {
+        use crate::ber::length_encoded_len;
+
+        let content_len = self.ber_content_len();
+        1 + length_encoded_len(content_len) + content_len
+    }
+
     /// Decode from BER format.
     ///
     /// Enforces [`MAX_OID_LEN`] limit per RFC 2578 Section 3.5.
