@@ -379,7 +379,7 @@ impl TrapV1Pdu {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidTrap`] if:
+    /// Returns [`Error::InvalidOid`] if:
     /// - `generic_trap < 0` (undefined per RFC 1157)
     /// - `generic_trap == i32::MAX` (would overflow when adding 1)
     /// - `specific_trap < 0` for enterprise-specific traps (OID arcs must be non-negative)

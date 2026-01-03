@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e81c592d118b93f80957bdf29ff93bb1c00352d63fa4280364d77806ab6efa9a # shrinks to pdu = Pdu { pdu_type: GetRequest, request_id: 0, error_status: 0, error_index: 1, varbinds: [] }
