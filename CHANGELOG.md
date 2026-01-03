@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-01-04
+
+### Added
+
+- `TcpTransportBuilder` with configurable allocation limit for DoS protection
+- Automatic key extension for AES-192/256 and 3DES privacy protocols
+
+### Changed
+
+- **Breaking:** Redesigned error types around caller actions and boxed `Error` for smaller `Result`s
+- **Breaking:** `TrapV1Pdu::v2_trap_oid()` now returns `Result` to handle invalid trap values
+- Use explicit tracing targets with brace syntax for stable log filtering
+- Reduced BER `MAX_LENGTH` from 16MB to 2MB
+- Use `getrandom` for salt initialization and skip zero on wraparound
+- Compute `VarBind::encoded_size()` arithmetically instead of allocating
+
+### Fixed
+
+- `Pdu::decode` rejecting valid GETBULK requests
+- OID first subidentifier overflow during BER encoding
+- Enforce `MAX_OID_LEN` during BER decode per RFC 2578 Section 3.5
+- PDU `error_index` and GETBULK parameter validation during decode
+- Integer overflow in BER decoder bounds checks
+- USM `engine_boots`/`engine_time` validation per RFC 3414
+- Cap `estimated_time()` at `MAX_ENGINE_TIME` per RFC 3414 Section 2.2.1
+- Broken doc links
+
 ## [0.3.0] - 2026-01-02
 
 ### Added
@@ -103,7 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zero-copy BER encoding/decoding
 - CLI utilities: `asnmp-get`, `asnmp-walk`, `asnmp-set`
 
-[Unreleased]: https://github.com/async-snmp/async-snmp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/async-snmp/async-snmp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/async-snmp/async-snmp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/async-snmp/async-snmp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/async-snmp/async-snmp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/async-snmp/async-snmp/compare/v0.1.1...v0.1.2
