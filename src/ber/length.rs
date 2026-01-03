@@ -7,8 +7,12 @@
 
 use crate::error::{DecodeErrorKind, Error, Result};
 
-/// Maximum length we'll accept (to prevent DoS)
-pub const MAX_LENGTH: usize = 0xFFFFFF; // 16MB
+/// Maximum length we'll accept (to prevent DoS).
+///
+/// 2MB is far larger than any realistic SNMP message (typical messages are
+/// hundreds of bytes to a few KB). This provides a sanity check at the BER
+/// decode layer while still being generous enough for any legitimate use case.
+pub const MAX_LENGTH: usize = 0x200000; // 2MB
 
 /// Encode a length value into the buffer (returns bytes in reverse order for prepending)
 ///
@@ -173,5 +177,42 @@ mod tests {
         // 0x83 0x00 0x00 0x80 = length 128 using 3 bytes (non-minimal, minimal would be 0x81 0x80)
         let result = decode_length(&[0x83, 0x00, 0x00, 0x80], 0);
         assert_eq!(result.unwrap(), (128, 4));
+    }
+
+    #[test]
+    fn test_max_length_enforced() {
+        // Length at exactly MAX_LENGTH should succeed
+        let max = MAX_LENGTH;
+        let max_bytes = [
+            0x83,
+            ((max >> 16) & 0xFF) as u8,
+            ((max >> 8) & 0xFF) as u8,
+            (max & 0xFF) as u8,
+        ];
+        let result = decode_length(&max_bytes, 0);
+        assert_eq!(result.unwrap(), (MAX_LENGTH, 4));
+
+        // Length exceeding MAX_LENGTH should fail (use 4-byte encoding)
+        let over = MAX_LENGTH + 1;
+        let over_bytes = [
+            0x84, // 4 length bytes follow
+            ((over >> 24) & 0xFF) as u8,
+            ((over >> 16) & 0xFF) as u8,
+            ((over >> 8) & 0xFF) as u8,
+            (over & 0xFF) as u8,
+        ];
+        let result = decode_length(&over_bytes, 0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            Error::Decode { kind, .. } => {
+                assert!(
+                    matches!(kind, DecodeErrorKind::LengthExceedsMax { .. }),
+                    "Expected LengthExceedsMax, got {:?}",
+                    kind
+                );
+            }
+            _ => panic!("Expected Decode error, got {:?}", err),
+        }
     }
 }
