@@ -118,12 +118,7 @@ impl MsgFlags {
     /// Decode from byte.
     pub fn from_byte(byte: u8) -> Result<Self> {
         let security_level = SecurityLevel::from_flags(byte).ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::v3",
-                byte,
-                kind = %DecodeErrorKind::InvalidMsgFlags,
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::v3", { byte, kind = %DecodeErrorKind::InvalidMsgFlags }, "decode error");
             Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -197,13 +192,7 @@ impl MsgGlobalData {
 
         // RFC 3412 HeaderData: msgID INTEGER (0..2147483647)
         if msg_id < 0 {
-            tracing::debug!(
-                target: "async_snmp::v3",
-                offset = seq.offset(),
-                value = msg_id,
-                kind = %DecodeErrorKind::InvalidMsgId { value: msg_id },
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::v3", { offset = seq.offset(), value = msg_id, kind = %DecodeErrorKind::InvalidMsgId { value: msg_id } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -213,13 +202,7 @@ impl MsgGlobalData {
         // RFC 3412 HeaderData: msgMaxSize INTEGER (484..2147483647)
         // Negative values indicate the sender encoded a value > 2^31-1
         if msg_max_size < 0 {
-            tracing::debug!(
-                target: "async_snmp::v3",
-                offset = seq.offset(),
-                value = msg_max_size,
-                kind = %DecodeErrorKind::MsgMaxSizeTooLarge { value: msg_max_size },
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::v3", { offset = seq.offset(), value = msg_max_size, kind = %DecodeErrorKind::MsgMaxSizeTooLarge { value: msg_max_size } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -227,14 +210,7 @@ impl MsgGlobalData {
         }
 
         if msg_max_size < MSG_MAX_SIZE_MINIMUM {
-            tracing::debug!(
-                target: "async_snmp::v3",
-                offset = seq.offset(),
-                value = msg_max_size,
-                minimum = MSG_MAX_SIZE_MINIMUM,
-                kind = %DecodeErrorKind::MsgMaxSizeTooSmall { value: msg_max_size, minimum: MSG_MAX_SIZE_MINIMUM },
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::v3", { offset = seq.offset(), value = msg_max_size, minimum = MSG_MAX_SIZE_MINIMUM, kind = %DecodeErrorKind::MsgMaxSizeTooSmall { value: msg_max_size, minimum: MSG_MAX_SIZE_MINIMUM } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -243,13 +219,7 @@ impl MsgGlobalData {
 
         let flags_bytes = seq.read_octet_string()?;
         if flags_bytes.len() != 1 {
-            tracing::debug!(
-                target: "async_snmp::v3",
-                offset = seq.offset(),
-                expected = 1,
-                actual = flags_bytes.len(),
-                "invalid msgFlags length"
-            );
+            tracing::debug!(target: "async_snmp::v3", { offset = seq.offset(), expected = 1, actual = flags_bytes.len() }, "invalid msgFlags length");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -261,13 +231,7 @@ impl MsgGlobalData {
         // Reject unknown security models per RFC 3412 Section 7.2
         let msg_security_model =
             SecurityModel::from_i32(msg_security_model_raw).ok_or_else(|| {
-                tracing::debug!(
-                    target: "async_snmp::v3",
-                    offset = seq.offset(),
-                    model = msg_security_model_raw,
-                    kind = %DecodeErrorKind::UnknownSecurityModel(msg_security_model_raw),
-                    "decode error"
-                );
+                tracing::debug!(target: "async_snmp::v3", { offset = seq.offset(), model = msg_security_model_raw, kind = %DecodeErrorKind::UnknownSecurityModel(msg_security_model_raw) }, "decode error");
                 Error::MalformedResponse {
                     target: UNKNOWN_TARGET,
                 }
@@ -472,13 +436,7 @@ impl V3Message {
         // Version
         let version = seq.read_integer()?;
         if version != 3 {
-            tracing::debug!(
-                target: "async_snmp::v3",
-                offset = seq.offset(),
-                version,
-                kind = %DecodeErrorKind::UnknownVersion(version),
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::v3", { offset = seq.offset(), version, kind = %DecodeErrorKind::UnknownVersion(version) }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }

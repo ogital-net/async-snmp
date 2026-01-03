@@ -438,12 +438,7 @@ impl Value {
             }
             tag::universal::NULL => {
                 if len != 0 {
-                    tracing::debug!(
-                        target: "async_snmp::value",
-                        offset = decoder.offset(),
-                        kind = %DecodeErrorKind::InvalidNull,
-                        "decode error"
-                    );
+                    tracing::debug!(target: "async_snmp::value", { offset = decoder.offset(), kind = %DecodeErrorKind::InvalidNull }, "decode error");
                     return Err(Error::MalformedResponse {
                         target: UNKNOWN_TARGET,
                     }
@@ -457,13 +452,7 @@ impl Value {
             }
             tag::application::IP_ADDRESS => {
                 if len != 4 {
-                    tracing::debug!(
-                        target: "async_snmp::value",
-                        offset = decoder.offset(),
-                        length = len,
-                        kind = %DecodeErrorKind::InvalidIpAddressLength { length: len },
-                        "decode error"
-                    );
+                    tracing::debug!(target: "async_snmp::value", { offset = decoder.offset(), length = len, kind = %DecodeErrorKind::InvalidIpAddressLength { length: len } }, "decode error");
                     return Err(Error::MalformedResponse {
                         target: UNKNOWN_TARGET,
                     }
@@ -513,12 +502,7 @@ impl Value {
             // Reject constructed OCTET STRING (0x24).
             // Net-snmp documents but does not parse constructed form; we follow suit.
             tag::universal::OCTET_STRING_CONSTRUCTED => {
-                tracing::debug!(
-                    target: "async_snmp::value",
-                    offset = decoder.offset(),
-                    kind = %DecodeErrorKind::ConstructedOctetString,
-                    "decode error"
-                );
+                tracing::debug!(target: "async_snmp::value", { offset = decoder.offset(), kind = %DecodeErrorKind::ConstructedOctetString }, "decode error");
                 Err(Error::MalformedResponse {
                     target: UNKNOWN_TARGET,
                 }

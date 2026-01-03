@@ -426,13 +426,7 @@ impl Transport for TcpTransport {
             Ok(Ok(data)) => Ok((data, target)),
             Ok(Err(e)) => Err(e),
             Err(_) => {
-                tracing::debug!(
-                    target: "async_snmp::transport::tcp",
-                    request_id,
-                    %target,
-                    elapsed = ?recv_timeout,
-                    "transport timeout"
-                );
+                tracing::debug!(target: "async_snmp::transport::tcp", { request_id, %target, elapsed = ?recv_timeout }, "transport timeout");
                 Err(Error::Timeout {
                     target,
                     elapsed: recv_timeout,
@@ -480,13 +474,7 @@ async fn read_ber_message(
 
     let tag = tag_buf[0];
     if tag != 0x30 {
-        tracing::debug!(
-            target: "async_snmp::transport::tcp",
-            expected_tag = 0x30,
-            actual_tag = tag,
-            %target,
-            "invalid SNMP message tag"
-        );
+        tracing::debug!(target: "async_snmp::transport::tcp", { expected_tag = 0x30, actual_tag = tag, %target }, "invalid SNMP message tag");
         return Err(Error::MalformedResponse { target }.boxed());
     }
 
@@ -502,22 +490,13 @@ async fn read_ber_message(
         (first_len_byte[0] as usize, vec![first_len_byte[0]])
     } else if first_len_byte[0] == 0x80 {
         // Indefinite length - not supported
-        tracing::debug!(
-            target: "async_snmp::transport::tcp",
-            %target,
-            "indefinite length encoding not supported"
-        );
+        tracing::debug!(target: "async_snmp::transport::tcp", { %target }, "indefinite length encoding not supported");
         return Err(Error::MalformedResponse { target }.boxed());
     } else {
         // Long form: first byte indicates number of following length bytes
         let num_len_bytes = (first_len_byte[0] & 0x7F) as usize;
         if num_len_bytes > 4 {
-            tracing::debug!(
-                target: "async_snmp::transport::tcp",
-                octets = num_len_bytes,
-                %target,
-                "length encoding too long"
-            );
+            tracing::debug!(target: "async_snmp::transport::tcp", { octets = num_len_bytes, %target }, "length encoding too long");
             return Err(Error::MalformedResponse { target }.boxed());
         }
 
@@ -543,13 +522,7 @@ async fn read_ber_message(
     // This prevents DoS attacks where a malicious sender claims a huge message
     // size without actually sending that much data.
     if content_len > max_allocation_size {
-        tracing::warn!(
-            target: "async_snmp::transport::tcp",
-            size = content_len,
-            max = max_allocation_size,
-            %target,
-            "message size exceeds limit"
-        );
+        tracing::warn!(target: "async_snmp::transport::tcp", { size = content_len, max = max_allocation_size, %target }, "message size exceeds limit");
         return Err(Error::MalformedResponse { target }.boxed());
     }
 

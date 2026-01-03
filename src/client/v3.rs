@@ -103,14 +103,9 @@ impl V3SecurityConfig {
     pub fn derive_keys(&self, engine_id: &[u8]) -> V3DerivedKeys {
         // Use master keys if available (efficient path)
         if let Some(ref master_keys) = self.master_keys {
-            tracing::trace!(
-                engine_id_len = engine_id.len(),
-                auth_protocol = ?master_keys.auth_protocol(),
-                priv_protocol = ?master_keys.priv_protocol(),
-                "localizing from cached master keys"
-            );
+            tracing::trace!(target: "async_snmp::client", { engine_id_len = engine_id.len(), auth_protocol = ?master_keys.auth_protocol(), priv_protocol = ?master_keys.priv_protocol() }, "localizing from cached master keys");
             let (auth_key, priv_key) = master_keys.localize(engine_id);
-            tracing::trace!("key localization complete");
+            tracing::trace!(target: "async_snmp::client", "key localization complete");
             return V3DerivedKeys {
                 auth_key: Some(auth_key),
                 priv_key,
@@ -118,21 +113,16 @@ impl V3SecurityConfig {
         }
 
         // Fall back to password-based derivation
-        tracing::trace!(
-            engine_id_len = engine_id.len(),
-            has_auth = self.auth.is_some(),
-            has_priv = self.privacy.is_some(),
-            "deriving localized keys from passwords"
-        );
+        tracing::trace!(target: "async_snmp::client", { engine_id_len = engine_id.len(), has_auth = self.auth.is_some(), has_priv = self.privacy.is_some() }, "deriving localized keys from passwords");
 
         let auth_key = self.auth.as_ref().map(|(protocol, password)| {
-            tracing::trace!(auth_protocol = ?protocol, "deriving auth key");
+            tracing::trace!(target: "async_snmp::client", { auth_protocol = ?protocol }, "deriving auth key");
             LocalizedKey::from_password(*protocol, password, engine_id)
         });
 
         let priv_key = match (&self.auth, &self.privacy) {
             (Some((auth_protocol, _)), Some((priv_protocol, priv_password))) => {
-                tracing::trace!(priv_protocol = ?priv_protocol, "deriving privacy key");
+                tracing::trace!(target: "async_snmp::client", { priv_protocol = ?priv_protocol }, "deriving privacy key");
                 Some(PrivKey::from_password(
                     *auth_protocol,
                     *priv_protocol,
@@ -143,7 +133,7 @@ impl V3SecurityConfig {
             _ => None,
         };
 
-        tracing::trace!("key derivation complete");
+        tracing::trace!(target: "async_snmp::client", "key derivation complete");
         V3DerivedKeys { auth_key, priv_key }
     }
 }
@@ -181,7 +171,7 @@ impl<T: Transport> Client<T> {
         if let Some(cache) = &self.inner.engine_cache
             && let Some(cached_state) = cache.get(&self.peer_addr())
         {
-            tracing::debug!("using cached engine state");
+            tracing::debug!(target: "async_snmp::client", "using cached engine state");
             let mut state = self.inner.engine_state.write().unwrap();
             *state = Some(cached_state.clone());
             // Derive keys for this engine
@@ -194,7 +184,7 @@ impl<T: Transport> Client<T> {
         }
 
         // Perform discovery
-        tracing::debug!("performing engine discovery");
+        tracing::debug!(target: "async_snmp::client", "performing engine discovery");
         let msg_id = self.next_request_id();
         let discovery_msg = V3Message::discovery_request(msg_id);
         let discovery_data = discovery_msg.encode();
@@ -216,13 +206,7 @@ impl<T: Transport> Client<T> {
             reported_msg_max_size,
             session_max,
         )?;
-        tracing::debug!(
-            snmp.engine_id = %hex::Bytes(&engine_state.engine_id),
-            snmp.engine_boots = engine_state.engine_boots,
-            snmp.engine_time = engine_state.engine_time,
-            snmp.msg_max_size = engine_state.msg_max_size,
-            "discovered engine"
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.engine_id = %hex::Bytes(&engine_state.engine_id), snmp.engine_boots = engine_state.engine_boots, snmp.engine_time = engine_state.engine_time, snmp.msg_max_size = engine_state.msg_max_size }, "discovered engine");
 
         // Derive keys for this engine
         if let Some(security) = &self.inner.config.v3_security {
@@ -251,21 +235,13 @@ impl<T: Transport> Client<T> {
     /// Section 6.2: retransmissions SHOULD use a new msgID for each attempt.
     pub(super) fn build_v3_message(&self, pdu: &Pdu, msg_id: i32) -> Result<Vec<u8>> {
         let security = self.inner.config.v3_security.as_ref().ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::client",
-                kind = %EncodeErrorKind::NoSecurityConfig,
-                "V3 security not configured"
-            );
+            tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::NoSecurityConfig }, "V3 security not configured");
             Error::Config("V3 security not configured".into()).boxed()
         })?;
 
         let engine_state = self.inner.engine_state.read().unwrap();
         let engine_state = engine_state.as_ref().ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::client",
-                kind = %EncodeErrorKind::EngineNotDiscovered,
-                "engine not discovered"
-            );
+            tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::EngineNotDiscovered }, "engine not discovered");
             Error::Config("engine not discovered".into()).boxed()
         })?;
 
@@ -286,27 +262,19 @@ impl<T: Transport> Client<T> {
 
         // Handle encryption if needed
         let (msg_data, priv_params) = if security_level.requires_priv() {
-            tracing::trace!("encrypting scoped PDU");
+            tracing::trace!(target: "async_snmp::client", "encrypting scoped PDU");
 
             // Get mutable priv_key - we need interior mutability for salt counter
             // Since PrivKey uses internal counter, we need to clone and use
             let derived_ref = derived.as_ref().ok_or_else(|| {
-                tracing::debug!(
-                    target: "async_snmp::client",
-                    kind = %EncodeErrorKind::KeysNotDerived,
-                    "keys not derived"
-                );
+                tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::KeysNotDerived }, "keys not derived");
                 Error::Config("keys not derived".into()).boxed()
             })?;
             let mut priv_key = derived_ref
                 .priv_key
                 .as_ref()
                 .ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::client",
-                        kind = %EncodeErrorKind::NoPrivKey,
-                        "privacy key not available"
-                    );
+                    tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::NoPrivKey }, "privacy key not available");
                     Error::Config("privacy key not available".into()).boxed()
                 })?
                 .clone();
@@ -323,23 +291,14 @@ impl<T: Transport> Client<T> {
                     Some(&self.inner.salt_counter),
                 )
                 .map_err(|e| {
-                    tracing::warn!(
-                        target: "async_snmp::crypto",
-                        peer = %self.peer_addr(),
-                        error = %e,
-                        "encryption failed"
-                    );
+                    tracing::warn!(target: "async_snmp::crypto", { peer = %self.peer_addr(), error = %e }, "encryption failed");
                     Error::Auth {
                         target: self.peer_addr(),
                     }
                     .boxed()
                 })?;
 
-            tracing::trace!(
-                plaintext_len = scoped_pdu_bytes.len(),
-                ciphertext_len = ciphertext.len(),
-                "encrypted scoped PDU"
-            );
+            tracing::trace!(target: "async_snmp::client", { plaintext_len = scoped_pdu_bytes.len(), ciphertext_len = ciphertext.len() }, "encrypted scoped PDU");
 
             (crate::message::V3MessageData::Encrypted(ciphertext), salt)
         } else {
@@ -395,34 +354,22 @@ impl<T: Transport> Client<T> {
 
         // Apply authentication if needed
         if security_level.requires_auth() {
-            tracing::trace!("applying HMAC authentication");
+            tracing::trace!(target: "async_snmp::client", "applying HMAC authentication");
 
             let auth_key = derived
                 .as_ref()
                 .and_then(|d| d.auth_key.as_ref())
                 .ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::client",
-                        kind = %EncodeErrorKind::MissingAuthKey,
-                        "auth key not available for encoding"
-                    );
+                    tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::MissingAuthKey }, "auth key not available for encoding");
                     Error::Config("auth key not available".into()).boxed()
                 })?;
 
             // Find auth params position and apply HMAC
             if let Some((offset, len)) = UsmSecurityParams::find_auth_params_offset(&encoded) {
                 authenticate_message(auth_key, &mut encoded, offset, len);
-                tracing::trace!(
-                    auth_params_offset = offset,
-                    auth_params_len = len,
-                    "applied HMAC authentication"
-                );
+                tracing::trace!(target: "async_snmp::client", { auth_params_offset = offset, auth_params_len = len }, "applied HMAC authentication");
             } else {
-                tracing::debug!(
-                    target: "async_snmp::client",
-                    kind = %EncodeErrorKind::MissingAuthParams,
-                    "could not find auth params position"
-                );
+                tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::MissingAuthParams }, "could not find auth params position");
                 return Err(Error::Config("could not find auth params position".into()).boxed());
             }
         }
@@ -449,11 +396,7 @@ impl<T: Transport> Client<T> {
         self.ensure_engine_discovered().await?;
 
         let security = self.inner.config.v3_security.as_ref().ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::client",
-                kind = %EncodeErrorKind::NoSecurityConfig,
-                "V3 security not configured"
-            );
+            tracing::debug!(target: "async_snmp::client", { kind = %EncodeErrorKind::NoSecurityConfig }, "V3 security not configured");
             Error::Config("V3 security not configured".into()).boxed()
         })?;
         let security_level = security.security_level();
@@ -468,21 +411,15 @@ impl<T: Transport> Client<T> {
         for attempt in 0..=max_attempts {
             Span::current().record("snmp.attempt", attempt);
             if attempt > 0 {
-                tracing::debug!("retrying V3 request");
+                tracing::debug!(target: "async_snmp::client", "retrying V3 request");
             }
 
             // RFC 3412 Section 6.2: use fresh msgID for each transmission attempt
             let msg_id = self.next_request_id();
             let data = self.build_v3_message(&pdu, msg_id)?;
 
-            tracing::debug!(
-                snmp.pdu_type = ?pdu.pdu_type,
-                snmp.varbind_count = pdu.varbinds.len(),
-                snmp.msg_id = msg_id,
-                "sending V3 {} request",
-                pdu.pdu_type
-            );
-            tracing::trace!(snmp.bytes = data.len(), "sending V3 request");
+            tracing::debug!(target: "async_snmp::client", { snmp.pdu_type = ?pdu.pdu_type, snmp.varbind_count = pdu.varbinds.len(), snmp.msg_id = msg_id }, "sending V3 {} request", pdu.pdu_type);
+            tracing::trace!(target: "async_snmp::client", { snmp.bytes = data.len() }, "sending V3 request");
 
             // Register (or re-register) with fresh deadline before sending
             self.inner
@@ -495,23 +432,18 @@ impl<T: Transport> Client<T> {
             // Wait for response (deadline was set by register_request)
             match self.inner.transport.recv(msg_id).await {
                 Ok((response_data, _source)) => {
-                    tracing::trace!(snmp.bytes = response_data.len(), "received V3 response");
+                    tracing::trace!(target: "async_snmp::client", { snmp.bytes = response_data.len() }, "received V3 response");
 
                     // Verify authentication if required
                     if security_level.requires_auth() {
-                        tracing::trace!("verifying HMAC authentication on response");
+                        tracing::trace!(target: "async_snmp::client", "verifying HMAC authentication on response");
 
                         let derived = self.inner.derived_keys.read().unwrap();
                         let auth_key = derived
                             .as_ref()
                             .and_then(|d| d.auth_key.as_ref())
                             .ok_or_else(|| {
-                                tracing::warn!(
-                                    target: "async_snmp::client",
-                                    peer = %self.peer_addr(),
-                                    kind = %AuthErrorKind::NoAuthKey,
-                                    "authentication failed"
-                                );
+                                tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::NoAuthKey }, "authentication failed");
                                 Error::Auth {
                                     target: self.peer_addr(),
                                 }
@@ -522,29 +454,15 @@ impl<T: Transport> Client<T> {
                             UsmSecurityParams::find_auth_params_offset(&response_data)
                         {
                             if !verify_message(auth_key, &response_data, offset, len) {
-                                tracing::warn!(
-                                    target: "async_snmp::client",
-                                    peer = %self.peer_addr(),
-                                    kind = %AuthErrorKind::HmacMismatch,
-                                    "authentication failed"
-                                );
+                                tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::HmacMismatch }, "authentication failed");
                                 return Err(Error::Auth {
                                     target: self.peer_addr(),
                                 }
                                 .boxed());
                             }
-                            tracing::trace!(
-                                auth_params_offset = offset,
-                                auth_params_len = len,
-                                "HMAC verification successful"
-                            );
+                            tracing::trace!(target: "async_snmp::client", { auth_params_offset = offset, auth_params_len = len }, "HMAC verification successful");
                         } else {
-                            tracing::warn!(
-                                target: "async_snmp::client",
-                                peer = %self.peer_addr(),
-                                kind = %AuthErrorKind::AuthParamsNotFound,
-                                "authentication failed"
-                            );
+                            tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::AuthParamsNotFound }, "authentication failed");
                             return Err(Error::Auth {
                                 target: self.peer_addr(),
                             }
@@ -561,7 +479,7 @@ impl<T: Transport> Client<T> {
                     {
                         // Check for time window error - resync and retry
                         if is_not_in_time_window_report(&scoped_pdu.pdu) {
-                            tracing::debug!("not in time window, resyncing");
+                            tracing::debug!(target: "async_snmp::client", "not in time window, resyncing");
                             // Update engine time from response
                             let usm_params =
                                 UsmSecurityParams::decode(response.security_params.clone())?;
@@ -581,10 +499,7 @@ impl<T: Transport> Client<T> {
                             if attempt < max_attempts {
                                 let delay = self.inner.config.retry.compute_delay(attempt);
                                 if !delay.is_zero() {
-                                    tracing::debug!(
-                                        delay_ms = delay.as_millis() as u64,
-                                        "backing off"
-                                    );
+                                    tracing::debug!(target: "async_snmp::client", { delay_ms = delay.as_millis() as u64 }, "backing off");
                                     tokio::time::sleep(delay).await;
                                 }
                             }
@@ -593,11 +508,7 @@ impl<T: Transport> Client<T> {
 
                         // Check for unknown engine ID
                         if is_unknown_engine_id_report(&scoped_pdu.pdu) {
-                            tracing::warn!(
-                                target: "async_snmp::client",
-                                peer = %self.peer_addr(),
-                                "unknown engine ID"
-                            );
+                            tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr() }, "unknown engine ID");
                             return Err(Error::Auth {
                                 target: self.peer_addr(),
                             }
@@ -621,10 +532,7 @@ impl<T: Transport> Client<T> {
                     let response_pdu = if security_level.requires_priv() {
                         match response.data {
                             crate::message::V3MessageData::Encrypted(ciphertext) => {
-                                tracing::trace!(
-                                    ciphertext_len = ciphertext.len(),
-                                    "decrypting response"
-                                );
+                                tracing::trace!(target: "async_snmp::client", { ciphertext_len = ciphertext.len() }, "decrypting response");
 
                                 // Decrypt
                                 let derived = self.inner.derived_keys.read().unwrap();
@@ -632,12 +540,7 @@ impl<T: Transport> Client<T> {
                                     .as_ref()
                                     .and_then(|d| d.priv_key.as_ref())
                                     .ok_or_else(|| {
-                                    tracing::warn!(
-                                        target: "async_snmp::client",
-                                        peer = %self.peer_addr(),
-                                        kind = %CryptoErrorKind::NoPrivKey,
-                                        "decryption failed"
-                                    );
+                                    tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %CryptoErrorKind::NoPrivKey }, "decryption failed");
                                     Error::Auth {
                                         target: self.peer_addr(),
                                     }
@@ -654,22 +557,14 @@ impl<T: Transport> Client<T> {
                                         &usm_params.priv_params,
                                     )
                                     .map_err(|e| {
-                                        tracing::warn!(
-                                            target: "async_snmp::crypto",
-                                            peer = %self.peer_addr(),
-                                            error = %e,
-                                            "decryption failed"
-                                        );
+                                        tracing::warn!(target: "async_snmp::crypto", { peer = %self.peer_addr(), error = %e }, "decryption failed");
                                         Error::Auth {
                                             target: self.peer_addr(),
                                         }
                                         .boxed()
                                     })?;
 
-                                tracing::trace!(
-                                    plaintext_len = plaintext.len(),
-                                    "decrypted response"
-                                );
+                                tracing::trace!(target: "async_snmp::client", { plaintext_len = plaintext.len() }, "decrypted response");
 
                                 // Decode scoped PDU
                                 let mut decoder = Decoder::with_target(plaintext, self.peer_addr());
@@ -680,12 +575,7 @@ impl<T: Transport> Client<T> {
                         }
                     } else {
                         response.into_pdu().ok_or_else(|| {
-                            tracing::debug!(
-                                target: "async_snmp::client",
-                                peer = %self.peer_addr(),
-                                kind = %DecodeErrorKind::MissingPdu,
-                                "missing PDU in response"
-                            );
+                            tracing::debug!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %DecodeErrorKind::MissingPdu }, "missing PDU in response");
                             Error::MalformedResponse {
                                 target: self.peer_addr(),
                             }
@@ -695,27 +585,14 @@ impl<T: Transport> Client<T> {
 
                     // Validate request ID
                     if response_pdu.request_id != pdu.request_id {
-                        tracing::warn!(
-                            target: "async_snmp::client",
-                            expected_request_id = pdu.request_id,
-                            actual_request_id = response_pdu.request_id,
-                            peer = %self.peer_addr(),
-                            "request ID mismatch in response"
-                        );
+                        tracing::warn!(target: "async_snmp::client", { expected_request_id = pdu.request_id, actual_request_id = response_pdu.request_id, peer = %self.peer_addr() }, "request ID mismatch in response");
                         return Err(Error::MalformedResponse {
                             target: self.peer_addr(),
                         }
                         .boxed());
                     }
 
-                    tracing::debug!(
-                        snmp.pdu_type = ?response_pdu.pdu_type,
-                        snmp.varbind_count = response_pdu.varbinds.len(),
-                        snmp.error_status = response_pdu.error_status,
-                        snmp.error_index = response_pdu.error_index,
-                        "received V3 {} response",
-                        response_pdu.pdu_type
-                    );
+                    tracing::debug!(target: "async_snmp::client", { snmp.pdu_type = ?response_pdu.pdu_type, snmp.varbind_count = response_pdu.varbinds.len(), snmp.error_status = response_pdu.error_status, snmp.error_index = response_pdu.error_index }, "received V3 {} response", response_pdu.pdu_type);
 
                     // Update engine time from successful response
                     {
@@ -755,7 +632,7 @@ impl<T: Transport> Client<T> {
                     if attempt < max_attempts {
                         let delay = self.inner.config.retry.compute_delay(attempt);
                         if !delay.is_zero() {
-                            tracing::debug!(delay_ms = delay.as_millis() as u64, "backing off");
+                            tracing::debug!(target: "async_snmp::client", { delay_ms = delay.as_millis() as u64 }, "backing off");
                             tokio::time::sleep(delay).await;
                         }
                     }
@@ -771,14 +648,7 @@ impl<T: Transport> Client<T> {
         // All retries exhausted
         let elapsed = start.elapsed();
         Span::current().record("snmp.elapsed_ms", elapsed.as_millis() as u64);
-        tracing::debug!(
-            target: "async_snmp::client",
-            request_id = pdu.request_id,
-            peer = %self.peer_addr(),
-            ?elapsed,
-            retries = max_attempts,
-            "request timed out"
-        );
+        tracing::debug!(target: "async_snmp::client", { request_id = pdu.request_id, peer = %self.peer_addr(), ?elapsed, retries = max_attempts }, "request timed out");
         Err(last_error.unwrap_or_else(|| {
             Error::Timeout {
                 target: self.peer_addr(),

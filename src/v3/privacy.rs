@@ -346,12 +346,7 @@ impl PrivKey {
         priv_params: &[u8],
     ) -> PrivacyResult<Bytes> {
         if priv_params.len() != 8 {
-            tracing::debug!(
-                target: "async_snmp::crypto",
-                expected = 8,
-                actual = priv_params.len(),
-                "invalid privParameters length"
-            );
+            tracing::debug!(target: "async_snmp::crypto", { expected = 8, actual = priv_params.len() }, "invalid privParameters length");
             return Err(PrivacyError::InvalidPrivParamsLength {
                 expected: 8,
                 actual: priv_params.len(),
@@ -440,12 +435,7 @@ impl PrivKey {
         type DesCbc = cbc::Decryptor<des::Des>;
 
         if !ciphertext.len().is_multiple_of(8) {
-            tracing::debug!(
-                target: "async_snmp::crypto",
-                length = ciphertext.len(),
-                block_size = 8,
-                "DES decryption failed: invalid ciphertext length"
-            );
+            tracing::debug!(target: "async_snmp::crypto", { length = ciphertext.len(), block_size = 8 }, "DES decryption failed: invalid ciphertext length");
             return Err(PrivacyError::InvalidCiphertextLength {
                 length: ciphertext.len(),
                 block_size: 8,
@@ -539,12 +529,7 @@ impl PrivKey {
         type Des3Cbc = cbc::Decryptor<des::TdesEde3>;
 
         if !ciphertext.len().is_multiple_of(8) {
-            tracing::debug!(
-                target: "async_snmp::crypto",
-                length = ciphertext.len(),
-                block_size = 8,
-                "3DES decryption failed: invalid ciphertext length"
-            );
+            tracing::debug!(target: "async_snmp::crypto", { length = ciphertext.len(), block_size = 8 }, "3DES decryption failed: invalid ciphertext length");
             return Err(PrivacyError::InvalidCiphertextLength {
                 length: ciphertext.len(),
                 block_size: 8,
@@ -635,7 +620,7 @@ impl PrivKey {
                 cipher.encrypt(&mut buffer);
             }
             _ => {
-                tracing::debug!(target: "async_snmp::crypto", key_len, "AES encryption failed: unsupported key length");
+                tracing::debug!(target: "async_snmp::crypto", { key_len }, "AES encryption failed: unsupported key length");
                 return Err(PrivacyError::UnsupportedProtocol);
             }
         }
@@ -698,7 +683,7 @@ impl PrivKey {
                 cipher.decrypt(&mut buffer);
             }
             _ => {
-                tracing::debug!(target: "async_snmp::crypto", key_len, "AES decryption failed: unsupported key length");
+                tracing::debug!(target: "async_snmp::crypto", { key_len }, "AES decryption failed: unsupported key length");
                 return Err(PrivacyError::UnsupportedProtocol);
             }
         }

@@ -142,11 +142,7 @@ impl EngineState {
         session_max: u32,
     ) -> Self {
         let msg_max_size = if reported_msg_max_size > session_max {
-            tracing::debug!(
-                reported = reported_msg_max_size,
-                session_max = session_max,
-                "capping msgMaxSize to session limit"
-            );
+            tracing::debug!(target: "async_snmp::v3", { reported = reported_msg_max_size, session_max = session_max }, "capping msgMaxSize to session limit");
             session_max
         } else {
             reported_msg_max_size
@@ -348,10 +344,7 @@ pub fn parse_discovery_response_with_limits(
     let usm = UsmSecurityParams::decode(security_params.clone())?;
 
     if usm.engine_id.is_empty() {
-        tracing::debug!(
-            target: "async_snmp::engine",
-            "discovery response contained empty engine ID"
-        );
+        tracing::debug!(target: "async_snmp::engine", "discovery response contained empty engine ID");
         return Err(Error::MalformedResponse {
             target: SocketAddr::from(([0, 0, 0, 0], 0)),
         }

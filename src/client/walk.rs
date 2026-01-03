@@ -94,13 +94,7 @@ impl OidTracker {
                 if let Some(prev) = last
                     && oid <= prev
                 {
-                    tracing::debug!(
-                        target: "async_snmp::walk",
-                        previous_oid = %prev,
-                        current_oid = %oid,
-                        %target,
-                        "non-increasing OID detected"
-                    );
+                    tracing::debug!(target: "async_snmp::walk", { previous_oid = %prev, current_oid = %oid, %target }, "non-increasing OID detected");
                     return Err(Error::WalkAborted {
                         target,
                         reason: WalkAbortReason::NonIncreasing,
@@ -112,12 +106,7 @@ impl OidTracker {
             }
             OidTracker::Relaxed { seen } => {
                 if !seen.insert(oid.clone()) {
-                    tracing::debug!(
-                        target: "async_snmp::walk",
-                        %oid,
-                        %target,
-                        "duplicate OID detected (cycle)"
-                    );
+                    tracing::debug!(target: "async_snmp::walk", { %oid, %target }, "duplicate OID detected (cycle)");
                     return Err(Error::WalkAborted {
                         target,
                         reason: WalkAbortReason::Cycle,

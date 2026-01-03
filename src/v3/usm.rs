@@ -123,13 +123,7 @@ impl UsmSecurityParams {
         // RFC 3414: msgAuthoritativeEngineBoots INTEGER (0..2147483647)
         let raw_boots = seq.read_integer()?;
         if raw_boots < 0 {
-            tracing::debug!(
-                target: "async_snmp::usm",
-                offset = seq.offset(),
-                value = raw_boots,
-                kind = %DecodeErrorKind::InvalidEngineBoots { value: raw_boots },
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::usm", { offset = seq.offset(), value = raw_boots, kind = %DecodeErrorKind::InvalidEngineBoots { value: raw_boots } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -140,13 +134,7 @@ impl UsmSecurityParams {
         // RFC 3414: msgAuthoritativeEngineTime INTEGER (0..2147483647)
         let raw_time = seq.read_integer()?;
         if raw_time < 0 {
-            tracing::debug!(
-                target: "async_snmp::usm",
-                offset = seq.offset(),
-                value = raw_time,
-                kind = %DecodeErrorKind::InvalidEngineTime { value: raw_time },
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::usm", { offset = seq.offset(), value = raw_time, kind = %DecodeErrorKind::InvalidEngineTime { value: raw_time } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }

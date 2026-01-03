@@ -48,8 +48,7 @@ pub(crate) const UNKNOWN_TARGET: SocketAddr =
 //
 // tracing::debug!(
 //     target: "async_snmp::ber",  // or ::auth, ::crypto, etc.
-//     snmp.offset = 42,
-//     snmp.decode_error = "ZeroLengthInteger",
+//     { snmp.offset = 42, snmp.decode_error = "ZeroLengthInteger" },
 //     "decode error details here"
 // );
 // return Err(Error::MalformedResponse { target }.boxed());
@@ -271,7 +270,7 @@ impl ErrorStatus {
             17 => Self::NotWritable,
             18 => Self::InconsistentName,
             other => {
-                tracing::warn!(snmp.error_status = other, "unknown SNMP error status");
+                tracing::warn!(target: "async_snmp::error", { snmp.error_status = other }, "unknown SNMP error status");
                 Self::Unknown(other)
             }
         }

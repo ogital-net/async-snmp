@@ -194,12 +194,7 @@ pub fn decode_length(
     let target = target.unwrap_or(UNKNOWN_TARGET);
 
     if data.is_empty() {
-        tracing::debug!(
-
-            snmp.offset = %base_offset,
-            kind = %DecodeErrorKind::TruncatedData,
-            "truncated data: unexpected end of input in length"
-        );
+        tracing::debug!(target: "async_snmp::ber", { snmp.offset = %base_offset, kind = %DecodeErrorKind::TruncatedData }, "truncated data: unexpected end of input in length");
         return Err(Error::MalformedResponse { target }.boxed());
     }
 
@@ -207,12 +202,7 @@ pub fn decode_length(
 
     if first == 0x80 {
         // Indefinite length - rejected per net-snmp behavior
-        tracing::debug!(
-
-            snmp.offset = %base_offset,
-            kind = %DecodeErrorKind::IndefiniteLength,
-            "indefinite length encoding not supported"
-        );
+        tracing::debug!(target: "async_snmp::ber", { snmp.offset = %base_offset, kind = %DecodeErrorKind::IndefiniteLength }, "indefinite length encoding not supported");
         return Err(Error::MalformedResponse { target }.boxed());
     }
 
@@ -224,32 +214,17 @@ pub fn decode_length(
         let num_octets = (first & 0x7F) as usize;
 
         if num_octets == 0 {
-            tracing::debug!(
-
-                snmp.offset = %base_offset,
-                kind = %DecodeErrorKind::InvalidLength,
-                "invalid length encoding: zero octets in long form"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %base_offset, kind = %DecodeErrorKind::InvalidLength }, "invalid length encoding: zero octets in long form");
             return Err(Error::MalformedResponse { target }.boxed());
         }
 
         if num_octets > 4 {
-            tracing::debug!(
-
-                snmp.offset = %base_offset,
-                kind = %DecodeErrorKind::LengthTooLong { octets: num_octets },
-                "length encoding too long"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %base_offset, kind = %DecodeErrorKind::LengthTooLong { octets: num_octets } }, "length encoding too long");
             return Err(Error::MalformedResponse { target }.boxed());
         }
 
         if data.len() < 1 + num_octets {
-            tracing::debug!(
-
-                snmp.offset = %base_offset,
-                kind = %DecodeErrorKind::InsufficientData { needed: 1 + num_octets, available: data.len() },
-                "truncated data in length field"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %base_offset, kind = %DecodeErrorKind::InsufficientData { needed: 1 + num_octets, available: data.len() } }, "truncated data in length field");
             return Err(Error::MalformedResponse { target }.boxed());
         }
 
@@ -259,12 +234,7 @@ pub fn decode_length(
         }
 
         if len > MAX_LENGTH {
-            tracing::debug!(
-
-                snmp.offset = %base_offset,
-                kind = %DecodeErrorKind::LengthExceedsMax { length: len, max: MAX_LENGTH },
-                "length exceeds maximum"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %base_offset, kind = %DecodeErrorKind::LengthExceedsMax { length: len, max: MAX_LENGTH } }, "length exceeds maximum");
             return Err(Error::MalformedResponse { target }.boxed());
         }
 

@@ -153,10 +153,7 @@ impl UdpTransport {
                     biased;
 
                     _ = inner.shutdown.cancelled() => {
-                        tracing::debug!(
-                            snmp.local_addr = %inner.local_addr,
-                            "UDP transport shutdown"
-                        );
+                        tracing::debug!(target: "async_snmp::transport", { snmp.local_addr = %inner.local_addr }, "UDP transport shutdown");
                         break;
                     }
 
@@ -171,23 +168,15 @@ impl UdpTransport {
 
                                 if let Some(request_id) = extract_request_id(&data) {
                                     if !inner.core.deliver(request_id, data, source) {
-                                        tracing::debug!(
-                                            snmp.request_id = request_id,
-                                            snmp.source = %source,
-                                            "response for unknown request"
-                                        );
+                                        tracing::debug!(target: "async_snmp::transport", { snmp.request_id = request_id, snmp.source = %source }, "response for unknown request");
                                     }
                                 } else {
-                                    tracing::debug!(
-                                        snmp.source = %source,
-                                        snmp.bytes = len,
-                                        "malformed response (no request_id)"
-                                    );
+                                    tracing::debug!(target: "async_snmp::transport", { snmp.source = %source, snmp.bytes = len }, "malformed response (no request_id)");
                                 }
                             }
                             Err(e) if inner.shutdown.is_cancelled() => break,
                             Err(e) => {
-                                tracing::error!(error = %e, "UDP recv error");
+                                tracing::error!(target: "async_snmp::transport", { error = %e }, "UDP recv error");
                             }
                         }
                     }
@@ -253,10 +242,7 @@ impl UdpTransportBuilder {
             source: e,
         })?;
 
-        tracing::debug!(
-            snmp.local_addr = %local_addr,
-            "UDP transport bound"
-        );
+        tracing::debug!(target: "async_snmp::transport", { snmp.local_addr = %local_addr }, "UDP transport bound");
 
         let inner = Arc::new(UdpTransportInner {
             socket,
@@ -290,11 +276,7 @@ pub struct UdpHandle {
 
 impl Transport for UdpHandle {
     async fn send(&self, data: &[u8]) -> Result<()> {
-        tracing::trace!(
-            snmp.target = %self.target,
-            snmp.bytes = data.len(),
-            "UDP send"
-        );
+        tracing::trace!(target: "async_snmp::transport", { snmp.target = %self.target, snmp.bytes = data.len() }, "UDP send");
         self.inner
             .socket
             .send_to(data, self.target)
@@ -307,11 +289,7 @@ impl Transport for UdpHandle {
     }
 
     async fn recv(&self, request_id: i32) -> Result<(Bytes, SocketAddr)> {
-        tracing::trace!(
-            snmp.target = %self.target,
-            snmp.request_id = request_id,
-            "UDP recv waiting"
-        );
+        tracing::trace!(target: "async_snmp::transport", { snmp.target = %self.target, snmp.request_id = request_id }, "UDP recv waiting");
 
         let result = self
             .inner
@@ -323,26 +301,12 @@ impl Transport for UdpHandle {
             Ok((data, source)) => {
                 // Warn on source mismatch
                 if self.inner.config.warn_on_source_mismatch && *source != self.target {
-                    tracing::warn!(
-                        snmp.request_id = request_id,
-                        snmp.target = %self.target,
-                        snmp.source = %source,
-                        "response source address mismatch"
-                    );
+                    tracing::warn!(target: "async_snmp::transport", { snmp.request_id = request_id, snmp.target = %self.target, snmp.source = %source }, "response source address mismatch");
                 }
-                tracing::trace!(
-                    snmp.target = %self.target,
-                    snmp.source = %source,
-                    snmp.bytes = data.len(),
-                    "UDP recv complete"
-                );
+                tracing::trace!(target: "async_snmp::transport", { snmp.target = %self.target, snmp.source = %source, snmp.bytes = data.len() }, "UDP recv complete");
             }
             Err(_) => {
-                tracing::trace!(
-                    snmp.target = %self.target,
-                    snmp.request_id = request_id,
-                    "UDP recv failed"
-                );
+                tracing::trace!(target: "async_snmp::transport", { snmp.target = %self.target, snmp.request_id = request_id }, "UDP recv failed");
             }
         }
 

@@ -152,13 +152,7 @@ impl Pdu {
     pub fn decode(decoder: &mut Decoder) -> Result<Self> {
         let tag = decoder.read_tag()?;
         let pdu_type = PduType::from_tag(tag).ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::pdu",
-                offset = decoder.offset(),
-                tag = tag,
-                kind = %DecodeErrorKind::UnknownPduType(tag),
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::pdu", { offset = decoder.offset(), tag = tag, kind = %DecodeErrorKind::UnknownPduType(tag) }, "decode error");
             Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -179,30 +173,17 @@ impl Pdu {
         // max_repetitions, so these validations don't apply.
         if pdu_type != PduType::GetBulkRequest {
             if error_index < 0 {
-                tracing::debug!(
-                    target: "async_snmp::pdu",
-                    offset = pdu_decoder.offset(),
-                    error_index = error_index,
-                    kind = %DecodeErrorKind::NegativeErrorIndex { value: error_index },
-                    "decode error"
-                );
+                tracing::debug!(target: "async_snmp::pdu", { offset = pdu_decoder.offset(), error_index = error_index, kind = %DecodeErrorKind::NegativeErrorIndex { value: error_index } }, "decode error");
                 return Err(Error::MalformedResponse {
                     target: UNKNOWN_TARGET,
                 }
                 .boxed());
             }
             if error_index > 0 && (error_index as usize) > varbinds.len() {
-                tracing::debug!(
-                    target: "async_snmp::pdu",
-                    offset = pdu_decoder.offset(),
-                    error_index = error_index,
-                    varbind_count = varbinds.len(),
-                    kind = %DecodeErrorKind::ErrorIndexOutOfBounds {
+                tracing::debug!(target: "async_snmp::pdu", { offset = pdu_decoder.offset(), error_index = error_index, varbind_count = varbinds.len(), kind = %DecodeErrorKind::ErrorIndexOutOfBounds {
                         index: error_index,
                         varbind_count: varbinds.len(),
-                    },
-                    "decode error"
-                );
+                    } }, "decode error");
                 return Err(Error::MalformedResponse {
                     target: UNKNOWN_TARGET,
                 }
@@ -459,17 +440,10 @@ impl TrapV1Pdu {
         // agent-addr NetworkAddress (IpAddress)
         let agent_tag = pdu.read_tag()?;
         if agent_tag != tag::application::IP_ADDRESS {
-            tracing::debug!(
-                target: "async_snmp::pdu",
-                offset = pdu.offset(),
-                expected = 0x40_u8,
-                actual = agent_tag,
-                kind = %DecodeErrorKind::UnexpectedTag {
+            tracing::debug!(target: "async_snmp::pdu", { offset = pdu.offset(), expected = 0x40_u8, actual = agent_tag, kind = %DecodeErrorKind::UnexpectedTag {
                     expected: 0x40,
                     actual: agent_tag,
-                },
-                "decode error"
-            );
+                } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -477,13 +451,7 @@ impl TrapV1Pdu {
         }
         let agent_len = pdu.read_length()?;
         if agent_len != 4 {
-            tracing::debug!(
-                target: "async_snmp::pdu",
-                offset = pdu.offset(),
-                length = agent_len,
-                kind = %DecodeErrorKind::InvalidIpAddressLength { length: agent_len },
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::pdu", { offset = pdu.offset(), length = agent_len, kind = %DecodeErrorKind::InvalidIpAddressLength { length: agent_len } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -506,17 +474,10 @@ impl TrapV1Pdu {
         // time-stamp TimeTicks
         let ts_tag = pdu.read_tag()?;
         if ts_tag != tag::application::TIMETICKS {
-            tracing::debug!(
-                target: "async_snmp::pdu",
-                offset = pdu.offset(),
-                expected = 0x43_u8,
-                actual = ts_tag,
-                kind = %DecodeErrorKind::UnexpectedTag {
+            tracing::debug!(target: "async_snmp::pdu", { offset = pdu.offset(), expected = 0x43_u8, actual = ts_tag, kind = %DecodeErrorKind::UnexpectedTag {
                     expected: 0x43,
                     actual: ts_tag,
-                },
-                "decode error"
-            );
+                } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -584,30 +545,18 @@ impl GetBulkPdu {
 
         // Validate non_repeaters and max_repetitions per RFC 3416 Section 4.2.3.
         if non_repeaters < 0 {
-            tracing::debug!(
-                target: "async_snmp::pdu",
-                offset = pdu.offset(),
-                non_repeaters = non_repeaters,
-                kind = %DecodeErrorKind::NegativeNonRepeaters {
+            tracing::debug!(target: "async_snmp::pdu", { offset = pdu.offset(), non_repeaters = non_repeaters, kind = %DecodeErrorKind::NegativeNonRepeaters {
                     value: non_repeaters,
-                },
-                "decode error"
-            );
+                } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
             .boxed());
         }
         if max_repetitions < 0 {
-            tracing::debug!(
-                target: "async_snmp::pdu",
-                offset = pdu.offset(),
-                max_repetitions = max_repetitions,
-                kind = %DecodeErrorKind::NegativeMaxRepetitions {
+            tracing::debug!(target: "async_snmp::pdu", { offset = pdu.offset(), max_repetitions = max_repetitions, kind = %DecodeErrorKind::NegativeMaxRepetitions {
                     value: max_repetitions,
-                },
-                "decode error"
-            );
+                } }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }

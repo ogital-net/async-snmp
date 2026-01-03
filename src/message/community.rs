@@ -81,12 +81,7 @@ impl CommunityMessage {
 
         let version_num = seq.read_integer()?;
         let version = Version::from_i32(version_num).ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::ber",
-                offset = seq.offset(),
-                kind = %DecodeErrorKind::UnknownVersion(version_num),
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::ber", { offset = seq.offset(), kind = %DecodeErrorKind::UnknownVersion(version_num) }, "decode error");
             Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -99,12 +94,7 @@ impl CommunityMessage {
     /// Decode from a sequence decoder where version has already been read.
     pub(crate) fn decode_from_sequence(seq: &mut Decoder, version: Version) -> Result<Self> {
         if version == Version::V3 {
-            tracing::debug!(
-                target: "async_snmp::ber",
-                offset = seq.offset(),
-                kind = %DecodeErrorKind::UnknownVersion(3),
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::ber", { offset = seq.offset(), kind = %DecodeErrorKind::UnknownVersion(3) }, "decode error");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }

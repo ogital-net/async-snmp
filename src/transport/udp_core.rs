@@ -107,13 +107,7 @@ impl UdpCore {
                     }
                 } else {
                     // Slot missing - already expired or cancelled
-                    tracing::debug!(
-                        target: "async_snmp::transport::udp",
-                        request_id,
-                        %target,
-                        elapsed = ?Duration::ZERO,
-                        "transport timeout (slot missing)"
-                    );
+                    tracing::debug!(target: "async_snmp::transport::udp", { request_id, %target, elapsed = ?Duration::ZERO }, "transport timeout (slot missing)");
                     return Err(Error::Timeout {
                         target,
                         elapsed: Duration::ZERO,
@@ -129,13 +123,7 @@ impl UdpCore {
                 match pending.get(&request_id) {
                     Some(slot) => slot.deadline,
                     None => {
-                        tracing::debug!(
-                            target: "async_snmp::transport::udp",
-                            request_id,
-                            %target,
-                            elapsed = ?Duration::ZERO,
-                            "transport timeout (slot removed)"
-                        );
+                        tracing::debug!(target: "async_snmp::transport::udp", { request_id, %target, elapsed = ?Duration::ZERO }, "transport timeout (slot removed)");
                         return Err(Error::Timeout {
                             target,
                             elapsed: Duration::ZERO,
@@ -151,13 +139,7 @@ impl UdpCore {
             if now >= deadline {
                 self.unregister(request_id);
                 let elapsed = now.saturating_duration_since(deadline - Duration::from_secs(1));
-                tracing::debug!(
-                    target: "async_snmp::transport::udp",
-                    request_id,
-                    %target,
-                    ?elapsed,
-                    "transport timeout"
-                );
+                tracing::debug!(target: "async_snmp::transport::udp", { request_id, %target, ?elapsed }, "transport timeout");
                 return Err(Error::Timeout {
                     target,
                     elapsed,

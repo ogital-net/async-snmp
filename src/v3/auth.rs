@@ -99,12 +99,8 @@ impl MasterKey {
     /// the password is shorter than [`MIN_PASSWORD_LENGTH`] (8 characters).
     pub fn from_password(protocol: AuthProtocol, password: &[u8]) -> Self {
         if password.len() < MIN_PASSWORD_LENGTH {
-            tracing::warn!(
-                password_len = password.len(),
-                min_len = MIN_PASSWORD_LENGTH,
-                "SNMPv3 password is shorter than recommended minimum; \
-                 net-snmp rejects passwords shorter than 8 characters"
-            );
+            tracing::warn!(target: "async_snmp::v3", { password_len = password.len(), min_len = MIN_PASSWORD_LENGTH }, "SNMPv3 password is shorter than recommended minimum; \
+                 net-snmp rejects passwords shorter than 8 characters");
         }
         let key = password_to_key(protocol, password);
         Self { key, protocol }

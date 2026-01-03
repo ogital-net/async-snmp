@@ -688,7 +688,7 @@ impl Agent {
                     result?
                 }
                 _ = self.inner.cancel.cancelled() => {
-                    tracing::info!("agent shutdown requested");
+                    tracing::info!(target: "async_snmp::agent", "agent shutdown requested");
                     return Ok(());
                 }
             };
@@ -708,12 +708,12 @@ impl Agent {
                 match agent.handle_request(data, recv_meta.addr).await {
                     Ok(Some(response_bytes)) => {
                         if let Err(e) = agent.send_response(&response_bytes, &recv_meta).await {
-                            tracing::warn!(snmp.source = %recv_meta.addr, error = %e, "failed to send response");
+                            tracing::warn!(target: "async_snmp::agent", { snmp.source = %recv_meta.addr, error = %e }, "failed to send response");
                         }
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        tracing::warn!(snmp.source = %recv_meta.addr, error = %e, "error handling request");
+                        tracing::warn!(target: "async_snmp::agent", { snmp.source = %recv_meta.addr, error = %e }, "error handling request");
                     }
                 }
 
@@ -790,12 +790,7 @@ impl Agent {
         let mut seq = decoder.read_sequence()?;
         let version_num = seq.read_integer()?;
         let version = Version::from_i32(version_num).ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::agent",
-                source = %source,
-                kind = %DecodeErrorKind::UnknownVersion(version_num),
-                "unknown SNMP version"
-            );
+            tracing::debug!(target: "async_snmp::agent", { source = %source, kind = %DecodeErrorKind::UnknownVersion(version_num) }, "unknown SNMP version");
             Error::MalformedResponse { target: source }.boxed()
         })?;
         drop(seq);

@@ -95,12 +95,7 @@ impl Message {
         // Read version to determine message type
         let version_num = seq.read_integer()?;
         let version = Version::from_i32(version_num).ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::ber",
-                offset = seq.offset(),
-                kind = %DecodeErrorKind::UnknownVersion(version_num),
-                "decode error"
-            );
+            tracing::debug!(target: "async_snmp::ber", { offset = seq.offset(), kind = %DecodeErrorKind::UnknownVersion(version_num) }, "decode error");
             Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }

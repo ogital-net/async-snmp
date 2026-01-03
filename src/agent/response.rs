@@ -35,7 +35,7 @@ impl Agent {
     ) -> Result<Option<Bytes>> {
         // Check reportableFlag before sending Report (RFC 3412 Section 7.1 Step 3)
         if !incoming.global_data.msg_flags.reportable {
-            tracing::debug!("message has reportable=false, not sending report");
+            tracing::debug!(target: "async_snmp::agent", "message has reportable=false, not sending report");
             return Ok(None);
         }
 
@@ -111,19 +111,11 @@ impl Agent {
             SecurityLevel::AuthNoPriv => {
                 let local_addr = self.inner.local_addr;
                 let keys = derived_keys.ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %AuthErrorKind::NoCredentials,
-                        "no credentials for response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %AuthErrorKind::NoCredentials }, "no credentials for response");
                     Error::Auth { target: local_addr }.boxed()
                 })?;
                 let auth_key = keys.auth_key.as_ref().ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %AuthErrorKind::NoAuthKey,
-                        "no auth key for response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %AuthErrorKind::NoAuthKey }, "no auth key for response");
                     Error::Auth { target: local_addr }.boxed()
                 })?;
 
@@ -145,11 +137,7 @@ impl Agent {
                     &response_bytes,
                 )
                 .ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %EncodeErrorKind::MissingAuthParams,
-                        "could not find auth params in response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %EncodeErrorKind::MissingAuthParams }, "could not find auth params in response");
                     Error::MalformedResponse { target: local_addr }.boxed()
                 })?;
 
@@ -160,27 +148,15 @@ impl Agent {
             SecurityLevel::AuthPriv => {
                 let local_addr = self.inner.local_addr;
                 let keys = derived_keys.ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %AuthErrorKind::NoCredentials,
-                        "no credentials for response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %AuthErrorKind::NoCredentials }, "no credentials for response");
                     Error::Auth { target: local_addr }.boxed()
                 })?;
                 let auth_key = keys.auth_key.as_ref().ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %AuthErrorKind::NoAuthKey,
-                        "no auth key for response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %AuthErrorKind::NoAuthKey }, "no auth key for response");
                     Error::Auth { target: local_addr }.boxed()
                 })?;
                 let priv_key = keys.priv_key.as_ref().ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %CryptoErrorKind::NoPrivKey,
-                        "no privacy key for response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %CryptoErrorKind::NoPrivKey }, "no privacy key for response");
                     Error::Auth { target: local_addr }.boxed()
                 })?;
 
@@ -195,11 +171,7 @@ impl Agent {
                         Some(&self.inner.salt_counter),
                     )
                     .map_err(|e| {
-                        tracing::debug!(
-                            target: "async_snmp::agent",
-                            error = %e,
-                            "encryption failed for response"
-                        );
+                        tracing::debug!(target: "async_snmp::agent", { error = %e }, "encryption failed for response");
                         Error::Auth { target: local_addr }.boxed()
                     })?;
 
@@ -222,11 +194,7 @@ impl Agent {
                     &response_bytes,
                 )
                 .ok_or_else(|| {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        kind = %EncodeErrorKind::MissingAuthParams,
-                        "could not find auth params in response"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { kind = %EncodeErrorKind::MissingAuthParams }, "could not find auth params in response");
                     Error::MalformedResponse { target: local_addr }.boxed()
                 })?;
 

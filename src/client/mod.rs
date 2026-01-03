@@ -206,7 +206,7 @@ impl<T: Transport> Client<T> {
         for attempt in 0..=max_attempts {
             Span::current().record("snmp.attempt", attempt);
             if attempt > 0 {
-                tracing::debug!("retrying request");
+                tracing::debug!(target: "async_snmp::client", "retrying request");
             }
 
             // Register (or re-register) with fresh deadline before sending
@@ -215,13 +215,13 @@ impl<T: Transport> Client<T> {
                 .register_request(request_id, self.inner.config.timeout);
 
             // Send request
-            tracing::trace!(snmp.bytes = data.len(), "sending request");
+            tracing::trace!(target: "async_snmp::client", { snmp.bytes = data.len() }, "sending request");
             self.inner.transport.send(data).await?;
 
             // Wait for response (deadline was set by register_request)
             match self.inner.transport.recv(request_id).await {
                 Ok((response_data, _source)) => {
-                    tracing::trace!(snmp.bytes = response_data.len(), "received response");
+                    tracing::trace!(target: "async_snmp::client", { snmp.bytes = response_data.len() }, "received response");
 
                     // Decode response and extract PDU
                     let response = Message::decode(response_data)?;
@@ -230,13 +230,7 @@ impl<T: Transport> Client<T> {
                     let response_version = response.version();
                     let expected_version = self.inner.config.version;
                     if response_version != expected_version {
-                        tracing::warn!(
-                            target: "async_snmp::client",
-                            ?expected_version,
-                            ?response_version,
-                            peer = %self.peer_addr(),
-                            "version mismatch in response"
-                        );
+                        tracing::warn!(target: "async_snmp::client", { ?expected_version, ?response_version, peer = %self.peer_addr() }, "version mismatch in response");
                         return Err(Error::MalformedResponse {
                             target: self.peer_addr(),
                         }
@@ -247,13 +241,7 @@ impl<T: Transport> Client<T> {
 
                     // Validate request ID
                     if response_pdu.request_id != request_id {
-                        tracing::warn!(
-                            target: "async_snmp::client",
-                            expected_request_id = request_id,
-                            actual_request_id = response_pdu.request_id,
-                            peer = %self.peer_addr(),
-                            "request ID mismatch in response"
-                        );
+                        tracing::warn!(target: "async_snmp::client", { expected_request_id = request_id, actual_request_id = response_pdu.request_id, peer = %self.peer_addr() }, "request ID mismatch in response");
                         return Err(Error::MalformedResponse {
                             target: self.peer_addr(),
                         }
@@ -289,7 +277,7 @@ impl<T: Transport> Client<T> {
                     if attempt < max_attempts {
                         let delay = self.inner.config.retry.compute_delay(attempt);
                         if !delay.is_zero() {
-                            tracing::debug!(delay_ms = delay.as_millis() as u64, "backing off");
+                            tracing::debug!(target: "async_snmp::client", { delay_ms = delay.as_millis() as u64 }, "backing off");
                             tokio::time::sleep(delay).await;
                         }
                     }
@@ -305,14 +293,7 @@ impl<T: Transport> Client<T> {
         // All retries exhausted
         let elapsed = start.elapsed();
         Span::current().record("snmp.elapsed_ms", elapsed.as_millis() as u64);
-        tracing::debug!(
-            target: "async_snmp::client",
-            request_id,
-            peer = %self.peer_addr(),
-            ?elapsed,
-            retries = max_attempts,
-            "request timed out"
-        );
+        tracing::debug!(target: "async_snmp::client", { request_id, peer = %self.peer_addr(), ?elapsed, retries = max_attempts }, "request timed out");
         Err(last_error.unwrap_or_else(|| {
             Error::Timeout {
                 target: self.peer_addr(),
@@ -330,12 +311,7 @@ impl<T: Transport> Client<T> {
             return self.send_v3_and_recv(pdu).await;
         }
 
-        tracing::debug!(
-            snmp.pdu_type = ?pdu.pdu_type,
-            snmp.varbind_count = pdu.varbinds.len(),
-            "sending {} request",
-            pdu.pdu_type
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.pdu_type = ?pdu.pdu_type, snmp.varbind_count = pdu.varbinds.len() }, "sending {} request", pdu.pdu_type);
 
         let request_id = pdu.request_id;
         let message = CommunityMessage::new(
@@ -346,14 +322,7 @@ impl<T: Transport> Client<T> {
         let data = message.encode();
         let response = self.send_and_recv(request_id, &data).await?;
 
-        tracing::debug!(
-            snmp.pdu_type = ?response.pdu_type,
-            snmp.varbind_count = response.varbinds.len(),
-            snmp.error_status = response.error_status,
-            snmp.error_index = response.error_index,
-            "received {} response",
-            response.pdu_type
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.pdu_type = ?response.pdu_type, snmp.varbind_count = response.varbinds.len(), snmp.error_status = response.error_status, snmp.error_index = response.error_index }, "received {} response", response.pdu_type);
 
         Ok(response)
     }
@@ -372,12 +341,7 @@ impl<T: Transport> Client<T> {
             return self.send_v3_and_recv(pdu).await;
         }
 
-        tracing::debug!(
-            snmp.non_repeaters = pdu.non_repeaters,
-            snmp.max_repetitions = pdu.max_repetitions,
-            snmp.varbind_count = pdu.varbinds.len(),
-            "sending GetBulkRequest"
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.non_repeaters = pdu.non_repeaters, snmp.max_repetitions = pdu.max_repetitions, snmp.varbind_count = pdu.varbinds.len() }, "sending GetBulkRequest");
 
         let request_id = pdu.request_id;
         let data = CommunityMessage::encode_bulk(
@@ -387,14 +351,7 @@ impl<T: Transport> Client<T> {
         );
         let response = self.send_and_recv(request_id, &data).await?;
 
-        tracing::debug!(
-            snmp.pdu_type = ?response.pdu_type,
-            snmp.varbind_count = response.varbinds.len(),
-            snmp.error_status = response.error_status,
-            snmp.error_index = response.error_index,
-            "received {} response",
-            response.pdu_type
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.pdu_type = ?response.pdu_type, snmp.varbind_count = response.varbinds.len(), snmp.error_status = response.error_status, snmp.error_index = response.error_index }, "received {} response", response.pdu_type);
 
         Ok(response)
     }
@@ -407,12 +364,7 @@ impl<T: Transport> Client<T> {
         let response = self.send_request(pdu).await?;
 
         response.varbinds.into_iter().next().ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::client",
-                peer = %self.peer_addr(),
-                kind = %DecodeErrorKind::EmptyResponse,
-                "empty GET response"
-            );
+            tracing::debug!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %DecodeErrorKind::EmptyResponse }, "empty GET response");
             Error::MalformedResponse {
                 target: self.peer_addr(),
             }
@@ -458,22 +410,12 @@ impl<T: Transport> Client<T> {
 
         // Batched path: split into chunks
         let num_batches = oids.len().div_ceil(max_per_request);
-        tracing::debug!(
-            snmp.oid_count = oids.len(),
-            snmp.max_per_request = max_per_request,
-            snmp.batch_count = num_batches,
-            "splitting GET request into batches"
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.oid_count = oids.len(), snmp.max_per_request = max_per_request, snmp.batch_count = num_batches }, "splitting GET request into batches");
 
         let mut all_results = Vec::with_capacity(oids.len());
 
         for (batch_idx, chunk) in oids.chunks(max_per_request).enumerate() {
-            tracing::debug!(
-                snmp.batch = batch_idx + 1,
-                snmp.batch_total = num_batches,
-                snmp.batch_oid_count = chunk.len(),
-                "sending GET batch"
-            );
+            tracing::debug!(target: "async_snmp::client", { snmp.batch = batch_idx + 1, snmp.batch_total = num_batches, snmp.batch_oid_count = chunk.len() }, "sending GET batch");
             let request_id = self.next_request_id();
             let pdu = Pdu::get_request(request_id, chunk);
             let response = self.send_request(pdu).await?;
@@ -491,12 +433,7 @@ impl<T: Transport> Client<T> {
         let response = self.send_request(pdu).await?;
 
         response.varbinds.into_iter().next().ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::client",
-                peer = %self.peer_addr(),
-                kind = %DecodeErrorKind::EmptyResponse,
-                "empty GETNEXT response"
-            );
+            tracing::debug!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %DecodeErrorKind::EmptyResponse }, "empty GETNEXT response");
             Error::MalformedResponse {
                 target: self.peer_addr(),
             }
@@ -541,22 +478,12 @@ impl<T: Transport> Client<T> {
 
         // Batched path: split into chunks
         let num_batches = oids.len().div_ceil(max_per_request);
-        tracing::debug!(
-            snmp.oid_count = oids.len(),
-            snmp.max_per_request = max_per_request,
-            snmp.batch_count = num_batches,
-            "splitting GETNEXT request into batches"
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.oid_count = oids.len(), snmp.max_per_request = max_per_request, snmp.batch_count = num_batches }, "splitting GETNEXT request into batches");
 
         let mut all_results = Vec::with_capacity(oids.len());
 
         for (batch_idx, chunk) in oids.chunks(max_per_request).enumerate() {
-            tracing::debug!(
-                snmp.batch = batch_idx + 1,
-                snmp.batch_total = num_batches,
-                snmp.batch_oid_count = chunk.len(),
-                "sending GETNEXT batch"
-            );
+            tracing::debug!(target: "async_snmp::client", { snmp.batch = batch_idx + 1, snmp.batch_total = num_batches, snmp.batch_oid_count = chunk.len() }, "sending GETNEXT batch");
             let request_id = self.next_request_id();
             let pdu = Pdu::get_next_request(request_id, chunk);
             let response = self.send_request(pdu).await?;
@@ -575,12 +502,7 @@ impl<T: Transport> Client<T> {
         let response = self.send_request(pdu).await?;
 
         response.varbinds.into_iter().next().ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::client",
-                peer = %self.peer_addr(),
-                kind = %DecodeErrorKind::EmptyResponse,
-                "empty SET response"
-            );
+            tracing::debug!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %DecodeErrorKind::EmptyResponse }, "empty SET response");
             Error::MalformedResponse {
                 target: self.peer_addr(),
             }
@@ -629,22 +551,12 @@ impl<T: Transport> Client<T> {
 
         // Batched path: split into chunks
         let num_batches = varbinds.len().div_ceil(max_per_request);
-        tracing::debug!(
-            snmp.oid_count = varbinds.len(),
-            snmp.max_per_request = max_per_request,
-            snmp.batch_count = num_batches,
-            "splitting SET request into batches"
-        );
+        tracing::debug!(target: "async_snmp::client", { snmp.oid_count = varbinds.len(), snmp.max_per_request = max_per_request, snmp.batch_count = num_batches }, "splitting SET request into batches");
 
         let mut all_results = Vec::with_capacity(varbinds.len());
 
         for (batch_idx, chunk) in varbinds.chunks(max_per_request).enumerate() {
-            tracing::debug!(
-                snmp.batch = batch_idx + 1,
-                snmp.batch_total = num_batches,
-                snmp.batch_oid_count = chunk.len(),
-                "sending SET batch"
-            );
+            tracing::debug!(target: "async_snmp::client", { snmp.batch = batch_idx + 1, snmp.batch_total = num_batches, snmp.batch_oid_count = chunk.len() }, "sending SET batch");
             let request_id = self.next_request_id();
             let vbs: Vec<VarBind> = chunk
                 .iter()

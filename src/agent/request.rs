@@ -28,7 +28,7 @@ impl Agent {
 
         // Validate community
         if !self.validate_community(&msg.community) {
-            tracing::debug!(snmp.source = %source, "invalid community string");
+            tracing::debug!(target: "async_snmp::agent", { snmp.source = %source }, "invalid community string");
             return Ok(None);
         }
 
@@ -84,7 +84,7 @@ impl Agent {
 
         // Validate community
         if !self.validate_community(&msg.community) {
-            tracing::debug!(snmp.source = %source, "invalid community string");
+            tracing::debug!(target: "async_snmp::agent", { snmp.source = %source }, "invalid community string");
             return Ok(None);
         }
 
@@ -145,7 +145,7 @@ impl Agent {
 
         // Verify engine ID matches ours
         if usm_params.engine_id.as_ref() != self.inner.engine_id.as_slice() {
-            tracing::debug!(snmp.source = %source, "engine ID mismatch");
+            tracing::debug!(target: "async_snmp::agent", { snmp.source = %source }, "engine ID mismatch");
             return self.send_v3_report(
                 &msg,
                 &usm_params,
@@ -166,16 +166,12 @@ impl Agent {
                     let auth_key = keys.auth_key.as_ref().unwrap();
                     let (auth_offset, auth_len) = UsmSecurityParams::find_auth_params_offset(&data)
                         .ok_or_else(|| {
-                            tracing::debug!(
-                                target: "async_snmp::agent",
-                                source = %source,
-                                "could not find auth params in message"
-                            );
+                            tracing::debug!(target: "async_snmp::agent", { source = %source }, "could not find auth params in message");
                             Error::Auth { target: source }.boxed()
                         })?;
 
                     if !verify_message(auth_key, &data, auth_offset, auth_len) {
-                        tracing::debug!(snmp.source = %source, "authentication failed");
+                        tracing::debug!(target: "async_snmp::agent", { snmp.source = %source }, "authentication failed");
                         return self.send_v3_report(
                             &msg,
                             &usm_params,
@@ -188,7 +184,7 @@ impl Agent {
                     let our_time = self.inner.engine_time.load(Ordering::Relaxed);
                     let time_diff = (usm_params.engine_time as i64 - our_time as i64).abs();
                     if time_diff > 150 {
-                        tracing::debug!(snmp.source = %source, "message outside time window");
+                        tracing::debug!(target: "async_snmp::agent", { snmp.source = %source }, "message outside time window");
                         return self.send_v3_report(
                             &msg,
                             &usm_params,
@@ -198,11 +194,7 @@ impl Agent {
                     }
                 }
                 _ => {
-                    tracing::debug!(
-                        snmp.source = %source,
-                        snmp.username = %String::from_utf8_lossy(&usm_params.username),
-                        "unknown user or no credentials"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { snmp.source = %source, snmp.username = %String::from_utf8_lossy(&usm_params.username) }, "unknown user or no credentials");
                     return self.send_v3_report(
                         &msg,
                         &usm_params,
@@ -221,12 +213,7 @@ impl Agent {
                     let encrypted_data = match &msg.data {
                         V3MessageData::Encrypted(data) => data,
                         V3MessageData::Plaintext(_) => {
-                            tracing::debug!(
-                                target: "async_snmp::agent",
-                                source = %source,
-                                kind = %DecodeErrorKind::ExpectedEncryption,
-                                "expected encrypted scoped PDU"
-                            );
+                            tracing::debug!(target: "async_snmp::agent", { source = %source, kind = %DecodeErrorKind::ExpectedEncryption }, "expected encrypted scoped PDU");
                             return Err(Error::MalformedResponse { target: source }.boxed());
                         }
                     };
@@ -239,12 +226,7 @@ impl Agent {
                             &usm_params.priv_params,
                         )
                         .map_err(|e| {
-                            tracing::debug!(
-                                target: "async_snmp::agent",
-                                source = %source,
-                                error = %e,
-                                "decryption failed"
-                            );
+                            tracing::debug!(target: "async_snmp::agent", { source = %source, error = %e }, "decryption failed");
                             Error::Auth { target: source }.boxed()
                         })?;
 
@@ -252,12 +234,7 @@ impl Agent {
                     ScopedPdu::decode(&mut decoder)?
                 }
                 _ => {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        source = %source,
-                        kind = %CryptoErrorKind::NoPrivKey,
-                        "no privacy key configured for user"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { source = %source, kind = %CryptoErrorKind::NoPrivKey }, "no privacy key configured for user");
                     return Err(Error::Auth { target: source }.boxed());
                 }
             }
@@ -265,12 +242,7 @@ impl Agent {
             match msg.scoped_pdu() {
                 Some(sp) => sp.clone(),
                 None => {
-                    tracing::debug!(
-                        target: "async_snmp::agent",
-                        source = %source,
-                        kind = %DecodeErrorKind::UnexpectedEncryption,
-                        "unexpected encrypted scoped PDU"
-                    );
+                    tracing::debug!(target: "async_snmp::agent", { source = %source, kind = %DecodeErrorKind::UnexpectedEncryption }, "unexpected encrypted scoped PDU");
                     return Err(Error::MalformedResponse { target: source }.boxed());
                 }
             }
@@ -342,7 +314,7 @@ impl Agent {
     ) -> Result<Option<Bytes>> {
         // Check reportableFlag before sending Report (RFC 3412 Section 7.1 Step 3)
         if !incoming.global_data.msg_flags.reportable {
-            tracing::debug!("discovery request has reportable=false, not sending report");
+            tracing::debug!(target: "async_snmp::agent", "discovery request has reportable=false, not sending report");
             return Ok(None);
         }
 

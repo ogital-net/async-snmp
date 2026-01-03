@@ -34,62 +34,34 @@ fn extract_notification_varbinds_impl(pdu: &Pdu, strict: bool) -> Result<(u32, O
     let target = UNKNOWN_TARGET;
 
     if pdu.varbinds.len() < 2 {
-        tracing::debug!(
-            target: "async_snmp::notification",
-            kind = %DecodeErrorKind::MissingPdu,
-            "notification has fewer than 2 varbinds"
-        );
+        tracing::debug!(target: "async_snmp::notification", { kind = %DecodeErrorKind::MissingPdu }, "notification has fewer than 2 varbinds");
         return Err(Error::MalformedResponse { target }.boxed());
     }
 
     // First varbind: sysUpTime.0
     if strict && pdu.varbinds[0].oid != oids::sys_uptime() {
-        tracing::warn!(
-            expected = %oids::sys_uptime(),
-            actual = %pdu.varbinds[0].oid,
-            "strict mode: first varbind OID is not sysUpTime.0"
-        );
-        tracing::debug!(
-            target: "async_snmp::notification",
-            kind = %DecodeErrorKind::InvalidOid,
-            "invalid first varbind OID"
-        );
+        tracing::warn!(target: "async_snmp::notification", { expected = %oids::sys_uptime(), actual = %pdu.varbinds[0].oid }, "strict mode: first varbind OID is not sysUpTime.0");
+        tracing::debug!(target: "async_snmp::notification", { kind = %DecodeErrorKind::InvalidOid }, "invalid first varbind OID");
         return Err(Error::MalformedResponse { target }.boxed());
     }
     let uptime = match &pdu.varbinds[0].value {
         Value::TimeTicks(t) => *t,
         _other => {
-            tracing::debug!(
-                target: "async_snmp::notification",
-                kind = %DecodeErrorKind::MissingPdu,
-                "first varbind is not TimeTicks"
-            );
+            tracing::debug!(target: "async_snmp::notification", { kind = %DecodeErrorKind::MissingPdu }, "first varbind is not TimeTicks");
             return Err(Error::MalformedResponse { target }.boxed());
         }
     };
 
     // Second varbind: snmpTrapOID.0
     if strict && pdu.varbinds[1].oid != oids::snmp_trap_oid() {
-        tracing::warn!(
-            expected = %oids::snmp_trap_oid(),
-            actual = %pdu.varbinds[1].oid,
-            "strict mode: second varbind OID is not snmpTrapOID.0"
-        );
-        tracing::debug!(
-            target: "async_snmp::notification",
-            kind = %DecodeErrorKind::InvalidOid,
-            "invalid second varbind OID"
-        );
+        tracing::warn!(target: "async_snmp::notification", { expected = %oids::snmp_trap_oid(), actual = %pdu.varbinds[1].oid }, "strict mode: second varbind OID is not snmpTrapOID.0");
+        tracing::debug!(target: "async_snmp::notification", { kind = %DecodeErrorKind::InvalidOid }, "invalid second varbind OID");
         return Err(Error::MalformedResponse { target }.boxed());
     }
     let trap_oid = match &pdu.varbinds[1].value {
         Value::ObjectIdentifier(oid) => oid.clone(),
         _other => {
-            tracing::debug!(
-                target: "async_snmp::notification",
-                kind = %DecodeErrorKind::MissingPdu,
-                "second varbind is not OID"
-            );
+            tracing::debug!(target: "async_snmp::notification", { kind = %DecodeErrorKind::MissingPdu }, "second varbind is not OID");
             return Err(Error::MalformedResponse { target }.boxed());
         }
     };

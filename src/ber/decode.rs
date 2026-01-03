@@ -79,12 +79,7 @@ impl Decoder {
     /// Read a single byte.
     pub fn read_byte(&mut self) -> Result<u8> {
         if self.offset >= self.data.len() {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::TruncatedData,
-                "truncated data: unexpected end of input"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::TruncatedData }, "truncated data: unexpected end of input");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -111,12 +106,7 @@ impl Decoder {
     pub fn read_bytes(&mut self, len: usize) -> Result<Bytes> {
         // Use saturating_add to prevent overflow from bypassing bounds check
         if self.offset.saturating_add(len) > self.data.len() {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::InsufficientData { needed: len, available: self.remaining() },
-                "insufficient data"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::InsufficientData { needed: len, available: self.remaining() } }, "insufficient data");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -131,12 +121,7 @@ impl Decoder {
     pub fn expect_tag(&mut self, expected: u8) -> Result<usize> {
         let tag = self.read_tag()?;
         if tag != expected {
-            tracing::debug!(
-
-                snmp.offset = %self.offset - 1,
-                kind = %DecodeErrorKind::UnexpectedTag { expected, actual: tag },
-                "unexpected tag"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset - 1, kind = %DecodeErrorKind::UnexpectedTag { expected, actual: tag } }, "unexpected tag");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -154,12 +139,7 @@ impl Decoder {
     /// Read integer value given the length.
     pub fn read_integer_value(&mut self, len: usize) -> Result<i32> {
         if len == 0 {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::ZeroLengthInteger,
-                "zero-length integer"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::ZeroLengthInteger }, "zero-length integer");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -167,12 +147,7 @@ impl Decoder {
         }
         if len > 4 {
             // Permissive: truncate with warning (matches net-snmp)
-            tracing::warn!(
-
-                snmp.offset = %self.offset,
-                length = len,
-                "integer too long, truncating to 4 bytes"
-            );
+            tracing::warn!(target: "async_snmp::ber", { snmp.offset = %self.offset, length = len }, "integer too long, truncating to 4 bytes");
         }
 
         let bytes = self.read_bytes(len)?;
@@ -197,12 +172,7 @@ impl Decoder {
     /// Read 64-bit unsigned integer value given the length.
     pub fn read_integer64_value(&mut self, len: usize) -> Result<u64> {
         if len == 0 {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::ZeroLengthInteger,
-                "zero-length integer"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::ZeroLengthInteger }, "zero-length integer");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -210,12 +180,7 @@ impl Decoder {
         }
         if len > 9 {
             // 9 bytes max: 1 leading zero + 8 bytes for u64
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::Integer64TooLong { length: len },
-                "integer64 too long"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::Integer64TooLong { length: len } }, "integer64 too long");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -241,12 +206,7 @@ impl Decoder {
     /// Read unsigned 32-bit integer value given length.
     pub fn read_unsigned32_value(&mut self, len: usize) -> Result<u32> {
         if len == 0 {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::ZeroLengthInteger,
-                "zero-length integer"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::ZeroLengthInteger }, "zero-length integer");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -254,12 +214,7 @@ impl Decoder {
         }
         if len > 5 {
             // 5 bytes max: 1 leading zero + 4 bytes for u32
-            tracing::warn!(
-
-                snmp.offset = %self.offset,
-                length = len,
-                "unsigned integer too long, truncating to 4 bytes"
-            );
+            tracing::warn!(target: "async_snmp::ber", { snmp.offset = %self.offset, length = len }, "unsigned integer too long, truncating to 4 bytes");
         }
 
         let bytes = self.read_bytes(len)?;
@@ -282,12 +237,7 @@ impl Decoder {
     pub fn read_null(&mut self) -> Result<()> {
         let len = self.expect_tag(tag::universal::NULL)?;
         if len != 0 {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::InvalidNull,
-                "NULL with non-zero length"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::InvalidNull }, "NULL with non-zero length");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -335,12 +285,7 @@ impl Decoder {
     pub fn read_ip_address(&mut self) -> Result<[u8; 4]> {
         let len = self.expect_tag(tag::application::IP_ADDRESS)?;
         if len != 4 {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::InvalidIpAddressLength { length: len },
-                "IP address must be 4 bytes"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::InvalidIpAddressLength { length: len } }, "IP address must be 4 bytes");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }
@@ -357,12 +302,7 @@ impl Decoder {
         // Use saturating_add and check BEFORE modifying offset to prevent overflow
         let new_offset = self.offset.saturating_add(len);
         if new_offset > self.data.len() {
-            tracing::debug!(
-
-                snmp.offset = %self.offset,
-                kind = %DecodeErrorKind::TlvOverflow,
-                "TLV extends past end of data"
-            );
+            tracing::debug!(target: "async_snmp::ber", { snmp.offset = %self.offset, kind = %DecodeErrorKind::TlvOverflow }, "TLV extends past end of data");
             return Err(Error::MalformedResponse {
                 target: self.target(),
             }

@@ -491,7 +491,7 @@ impl NotificationReceiver {
                 Ok(None) => continue, // Not a notification PDU, ignore
                 Err(e) => {
                     // Log parsing error but continue receiving
-                    tracing::warn!(snmp.source = %source, error = %e, "failed to parse notification");
+                    tracing::warn!(target: "async_snmp::notification", { snmp.source = %source, error = %e }, "failed to parse notification");
                     continue;
                 }
             }
@@ -511,12 +511,7 @@ impl NotificationReceiver {
         let mut seq = decoder.read_sequence()?;
         let version_num = seq.read_integer()?;
         let version = Version::from_i32(version_num).ok_or_else(|| {
-            tracing::debug!(
-                target: "async_snmp::notification",
-                source = %source,
-                kind = %DecodeErrorKind::UnknownVersion(version_num),
-                "unknown SNMP version"
-            );
+            tracing::debug!(target: "async_snmp::notification", { source = %source, kind = %DecodeErrorKind::UnknownVersion(version_num) }, "unknown SNMP version");
             Error::MalformedResponse { target: source }.boxed()
         })?;
         drop(seq);

@@ -470,12 +470,7 @@ impl Oid {
 
             // RFC 2578 Section 3.5: "at most 128 sub-identifiers in a value"
             if arcs.len() > MAX_OID_LEN {
-                tracing::debug!(
-
-                    snmp.offset = %i,
-                    kind = %DecodeErrorKind::OidTooLong { count: arcs.len(), max: MAX_OID_LEN },
-                    "OID exceeds maximum arc count"
-                );
+                tracing::debug!(target: "async_snmp::oid", { snmp.offset = %i, kind = %DecodeErrorKind::OidTooLong { count: arcs.len(), max: MAX_OID_LEN } }, "OID exceeds maximum arc count");
                 return Err(Error::MalformedResponse {
                     target: UNKNOWN_TARGET,
                 }
@@ -520,12 +515,7 @@ fn decode_subidentifier(data: &[u8]) -> Result<(u32, usize)> {
 
     loop {
         if i >= data.len() {
-            tracing::debug!(
-
-                snmp.offset = %i,
-                kind = %DecodeErrorKind::TruncatedData,
-                "unexpected end of data in OID subidentifier"
-            );
+            tracing::debug!(target: "async_snmp::oid", { snmp.offset = %i, kind = %DecodeErrorKind::TruncatedData }, "unexpected end of data in OID subidentifier");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
@@ -537,12 +527,7 @@ fn decode_subidentifier(data: &[u8]) -> Result<(u32, usize)> {
 
         // Check for overflow before shifting
         if value > (u32::MAX >> 7) {
-            tracing::debug!(
-
-                snmp.offset = %i,
-                kind = %DecodeErrorKind::IntegerOverflow,
-                "OID subidentifier overflow"
-            );
+            tracing::debug!(target: "async_snmp::oid", { snmp.offset = %i, kind = %DecodeErrorKind::IntegerOverflow }, "OID subidentifier overflow");
             return Err(Error::MalformedResponse {
                 target: UNKNOWN_TARGET,
             }
