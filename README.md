@@ -17,7 +17,7 @@ This library is not currently stable. While pre v1.0, breaking changes are likel
 - **Full protocol support**: SNMPv1, v2c, and v3 (USM)
 - **Async-first**: Built on Tokio for high-performance async I/O
 - **All operations**: GET, GETNEXT, GETBULK, SET, WALK, BULKWALK
-- **SNMPv3 security**: MD5/SHA-1/SHA-2 authentication, DES/AES-128/192/256 privacy
+- **SNMPv3 security**: MD5/SHA-1/SHA-2 authentication, DES/3DES/AES-128/192/256 privacy
 - **Multiple transports**: UDP, TCP, and shared UDP for scalable polling
 - **Zero-copy decoding**: Minimal allocations using `bytes` crate
 - **Type-safe**: Compile-time OID validation with `oid!` macro
@@ -37,7 +37,7 @@ This library is not currently stable. While pre v1.0, breaking changes are likel
 
 **Authentication:** MD5, SHA-1, SHA-224, SHA-256, SHA-384, SHA-512
 
-**Privacy:** DES, AES-128, AES-192, AES-256
+**Privacy:** DES, 3DES, AES-128, AES-192, AES-256
 
 ## Installation
 
@@ -49,7 +49,7 @@ Or add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-async-snmp = "0.1"
+async-snmp = "0.4"
 ```
 
 ## Quick Start
