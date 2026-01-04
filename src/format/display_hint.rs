@@ -223,6 +223,80 @@ fn is_digit(c: u8) -> bool {
     c.is_ascii_digit()
 }
 
+/// Apply RFC 2579 DISPLAY-HINT formatting to an integer value.
+///
+/// INTEGER hints have the form: `<format>[-<decimal-places>]`
+///
+/// Format characters:
+/// - `d` or `d-N`: Decimal, optionally with N implied decimal places
+/// - `x`: Lowercase hexadecimal
+/// - `o`: Octal
+/// - `b`: Binary
+///
+/// Returns `None` for invalid or unsupported hint formats.
+///
+/// # Examples
+///
+/// ```
+/// use async_snmp::format::display_hint;
+///
+/// // Basic formats
+/// assert_eq!(display_hint::apply_integer("d", 1234), Some("1234".to_string()));
+/// assert_eq!(display_hint::apply_integer("x", 255), Some("ff".to_string()));
+/// assert_eq!(display_hint::apply_integer("o", 8), Some("10".to_string()));
+/// assert_eq!(display_hint::apply_integer("b", 5), Some("101".to_string()));
+///
+/// // Decimal places (DISPLAY-HINT "d-2" means 2 implied decimal places)
+/// assert_eq!(display_hint::apply_integer("d-2", 1234), Some("12.34".to_string()));
+/// assert_eq!(display_hint::apply_integer("d-2", 5), Some("0.05".to_string()));
+/// assert_eq!(display_hint::apply_integer("d-2", -500), Some("-5.00".to_string()));
+/// assert_eq!(display_hint::apply_integer("d-1", 255), Some("25.5".to_string()));
+/// ```
+pub fn apply_integer(hint: &str, value: i32) -> Option<String> {
+    match hint {
+        "x" => Some(format!("{:x}", value)),
+        "o" => Some(format!("{:o}", value)),
+        "b" => Some(format!("{:b}", value)),
+        "d" => Some(format!("{}", value)),
+        hint if hint.starts_with("d-") => {
+            let places: usize = hint[2..].parse().ok()?;
+            if places == 0 {
+                return Some(format!("{}", value));
+            }
+            Some(format_with_decimal_point(value, places))
+        }
+        _ => None,
+    }
+}
+
+/// Format an integer with an implied decimal point.
+///
+/// Uses pure string manipulation to avoid floating-point rounding issues.
+fn format_with_decimal_point(value: i32, places: usize) -> String {
+    let is_negative = value < 0;
+    let abs_value = value.unsigned_abs();
+    let abs_str = abs_value.to_string();
+
+    let result = if abs_str.len() <= places {
+        // Need to pad with leading zeros after decimal point
+        // e.g., 5 with places=2 -> "0.05"
+        let zeros_needed = places - abs_str.len();
+        format!("0.{}{}", "0".repeat(zeros_needed), abs_str)
+    } else {
+        // Insert decimal point
+        // e.g., 1234 with places=2 -> "12.34"
+        let split_point = abs_str.len() - places;
+        let (integer_part, decimal_part) = abs_str.split_at(split_point);
+        format!("{}.{}", integer_part, decimal_part)
+    };
+
+    if is_negative {
+        format!("-{}", result)
+    } else {
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +494,71 @@ mod tests {
     #[test]
     fn hex_implicit_repetition() {
         assert_eq!(apply("1x:", &[0xaa, 0xbb, 0xcc, 0xdd]), "aa:bb:cc:dd");
+    }
+
+    // ========================================================================
+    // INTEGER DISPLAY-HINT Tests
+    // ========================================================================
+
+    #[test]
+    fn integer_hint_decimal() {
+        assert_eq!(apply_integer("d", 1234), Some("1234".to_string()));
+        assert_eq!(apply_integer("d", -42), Some("-42".to_string()));
+        assert_eq!(apply_integer("d", 0), Some("0".to_string()));
+    }
+
+    #[test]
+    fn integer_hint_hex() {
+        assert_eq!(apply_integer("x", 255), Some("ff".to_string()));
+        assert_eq!(apply_integer("x", 0), Some("0".to_string()));
+        assert_eq!(apply_integer("x", 16), Some("10".to_string()));
+        // Negative values show as two's complement representation
+        assert_eq!(apply_integer("x", -1), Some("ffffffff".to_string()));
+    }
+
+    #[test]
+    fn integer_hint_octal() {
+        assert_eq!(apply_integer("o", 8), Some("10".to_string()));
+        assert_eq!(apply_integer("o", 64), Some("100".to_string()));
+        assert_eq!(apply_integer("o", 0), Some("0".to_string()));
+    }
+
+    #[test]
+    fn integer_hint_binary() {
+        assert_eq!(apply_integer("b", 5), Some("101".to_string()));
+        assert_eq!(apply_integer("b", 255), Some("11111111".to_string()));
+        assert_eq!(apply_integer("b", 0), Some("0".to_string()));
+    }
+
+    #[test]
+    fn integer_hint_decimal_places() {
+        // Standard cases
+        assert_eq!(apply_integer("d-2", 1234), Some("12.34".to_string()));
+        assert_eq!(apply_integer("d-1", 255), Some("25.5".to_string()));
+        assert_eq!(apply_integer("d-3", 12500), Some("12.500".to_string()));
+
+        // Small values need leading zeros after decimal
+        assert_eq!(apply_integer("d-2", 5), Some("0.05".to_string()));
+        assert_eq!(apply_integer("d-2", 50), Some("0.50".to_string()));
+        assert_eq!(apply_integer("d-3", 5), Some("0.005".to_string()));
+
+        // Zero
+        assert_eq!(apply_integer("d-2", 0), Some("0.00".to_string()));
+
+        // Negative values
+        assert_eq!(apply_integer("d-2", -500), Some("-5.00".to_string()));
+        assert_eq!(apply_integer("d-2", -5), Some("-0.05".to_string()));
+        assert_eq!(apply_integer("d-1", -42), Some("-4.2".to_string()));
+
+        // d-0 is just decimal
+        assert_eq!(apply_integer("d-0", 1234), Some("1234".to_string()));
+    }
+
+    #[test]
+    fn integer_hint_invalid() {
+        assert_eq!(apply_integer("", 42), None);
+        assert_eq!(apply_integer("z", 42), None);
+        assert_eq!(apply_integer("d-abc", 42), None);
+        assert_eq!(apply_integer("1d", 42), None); // OCTET STRING format, not INTEGER
     }
 }

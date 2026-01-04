@@ -38,3 +38,4 @@
 
 pub mod display_hint;
 pub mod hex;
+pub mod hints;

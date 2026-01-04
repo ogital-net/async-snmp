@@ -1,0 +1,141 @@
+//! Pre-defined DISPLAY-HINT constants for common SNMP types.
+//!
+//! These constants can be used with [`Value::format_with_hint()`](crate::Value::format_with_hint)
+//! to format values according to their MIB definitions without looking up hints.
+//!
+//! # Example
+//!
+//! ```
+//! use async_snmp::format::hints;
+//! use async_snmp::Value;
+//! use bytes::Bytes;
+//!
+//! let mac = Value::OctetString(Bytes::from_static(&[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]));
+//! assert_eq!(mac.format_with_hint(hints::MAC_ADDRESS), Some("00:1a:2b:3c:4d:5e".to_string()));
+//! ```
+
+/// MAC address: "1x:" - each byte as hex separated by colons.
+///
+/// Used by SNMPv2-TC::MacAddress and many physical address fields.
+pub const MAC_ADDRESS: &str = "1x:";
+
+/// Display string (UTF-8): "255a" - up to 255 ASCII/UTF-8 characters.
+///
+/// Used by SNMPv2-TC::DisplayString, SNMPv2-MIB::sysDescr, etc.
+pub const DISPLAY_STRING: &str = "255a";
+
+/// Date and time: "2d-1d-1d,1d:1d:1d.1d,1a1d:1d".
+///
+/// Used by SNMPv2-TC::DateAndTime (8 or 11 bytes).
+/// Format: YYYY-MM-DD,HH:MM:SS.d,+/-HH:MM
+pub const DATE_AND_TIME: &str = "2d-1d-1d,1d:1d:1d.1d,1a1d:1d";
+
+/// Hexadecimal string: "1x" - each byte as two hex digits.
+///
+/// Common format for binary data that should display as hex.
+pub const HEX_STRING: &str = "1x";
+
+/// Hexadecimal with spaces: "1x " - each byte as hex separated by spaces.
+///
+/// Alternative hex format sometimes used for readability.
+pub const HEX_STRING_SPACED: &str = "1x ";
+
+/// Dotted decimal: "1d." - each byte as decimal separated by dots.
+///
+/// Used for IP addresses and similar dotted notations.
+pub const DOTTED_DECIMAL: &str = "1d.";
+
+/// UTF-8 string: "255t" - up to 255 UTF-8 encoded characters.
+///
+/// For explicitly UTF-8 encoded strings.
+pub const UTF8_STRING: &str = "255t";
+
+/// Octet string as binary bits: "1b" - each byte as 8 binary digits.
+///
+/// Useful for displaying bitmasks and flags.
+pub const BINARY_STRING: &str = "1b";
+
+/// Integer as hex: "x" - integer value in lowercase hexadecimal.
+pub const INTEGER_HEX: &str = "x";
+
+/// Integer with 1 decimal place: "d-1".
+///
+/// Common for tenths (e.g., temperatures in 0.1 degree units).
+pub const DECIMAL_1: &str = "d-1";
+
+/// Integer with 2 decimal places: "d-2".
+///
+/// Common for hundredths (e.g., percentages as 0-10000).
+pub const DECIMAL_2: &str = "d-2";
+
+/// Integer with 3 decimal places: "d-3".
+///
+/// Common for thousandths (e.g., voltages in millivolts).
+pub const DECIMAL_3: &str = "d-3";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Value;
+    use bytes::Bytes;
+
+    #[test]
+    fn test_mac_address_hint() {
+        let mac = Value::OctetString(Bytes::from_static(&[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]));
+        assert_eq!(
+            mac.format_with_hint(MAC_ADDRESS),
+            Some("00:1a:2b:3c:4d:5e".to_string())
+        );
+    }
+
+    #[test]
+    fn test_display_string_hint() {
+        let desc = Value::OctetString(Bytes::from_static(b"Hello World"));
+        assert_eq!(
+            desc.format_with_hint(DISPLAY_STRING),
+            Some("Hello World".to_string())
+        );
+    }
+
+    #[test]
+    fn test_hex_string_hint() {
+        let data = Value::OctetString(Bytes::from_static(&[0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(
+            data.format_with_hint(HEX_STRING),
+            Some("deadbeef".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dotted_decimal_hint() {
+        let ip = Value::OctetString(Bytes::from_static(&[192, 168, 1, 1]));
+        assert_eq!(
+            ip.format_with_hint(DOTTED_DECIMAL),
+            Some("192.168.1.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_integer_decimal_hints() {
+        assert_eq!(
+            Value::Integer(2350).format_with_hint(DECIMAL_2),
+            Some("23.50".to_string())
+        );
+        assert_eq!(
+            Value::Integer(1234).format_with_hint(DECIMAL_1),
+            Some("123.4".to_string())
+        );
+        assert_eq!(
+            Value::Integer(12500).format_with_hint(DECIMAL_3),
+            Some("12.500".to_string())
+        );
+    }
+
+    #[test]
+    fn test_integer_hex_hint() {
+        assert_eq!(
+            Value::Integer(255).format_with_hint(INTEGER_HEX),
+            Some("ff".to_string())
+        );
+    }
+}
