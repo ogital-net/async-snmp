@@ -134,8 +134,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for oid in &v3_oids {
-        let handle = shared_v3.handle(container_target);
-
         // Create auth with master keys (cheap: just clones Arc)
         // Uses container user: privaes192_user (SHA-256 + AES-192)
         let auth = Auth::usm("privaes192_user").with_master_keys(master_keys.clone());
@@ -144,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .timeout(Duration::from_secs(5))
             .retry(Retry::fixed(2, Duration::ZERO))
             .engine_cache(engine_cache.clone())
-            .build(handle)?;
+            .build_with(&shared_v3)?;
 
         match client.get(oid).await {
             Ok(vb) => println!("  {}: {:?}", oid, vb.value),

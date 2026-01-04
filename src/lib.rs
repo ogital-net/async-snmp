@@ -132,38 +132,37 @@
 //! - **Scrape isolation**: Per-client via [`.connect()`](ClientBuilder::connect) (FD + syscall overhead)
 //!
 //! ```rust,no_run
-//! use async_snmp::{Auth, Client, oid};
-//! use async_snmp::transport::UdpTransport;
+//! use async_snmp::{Auth, Client, oid, UdpTransport};
 //! use futures::future::join_all;
 //!
-//! async fn poll_many_devices(targets: Vec<String>) -> Vec<(String, Result<String, String>)> {
-//!     // Single socket shared across all clients
-//!     let transport = UdpTransport::bind("0.0.0.0:0")
+//! async fn poll_many_devices(targets: Vec<&str>) -> Vec<(&str, Result<String, String>)> {
+//!     // Single dual-stack socket shared across all clients
+//!     let transport = UdpTransport::bind("[::]:0")
 //!         .await
 //!         .expect("failed to bind");
 //!
 //!     let sys_descr = oid!(1, 3, 6, 1, 2, 1, 1, 1, 0);
 //!
-//!     // Spawn concurrent requests
-//!     let futures: Vec<_> = targets.iter().map(|target| {
-//!         let handle = transport.handle(target.parse().expect("invalid addr"));
-//!         let oid = sys_descr.clone();
-//!         let target = target.clone();
-//!         async move {
-//!             let client = match Client::builder(target.clone(), Auth::v2c("public"))
-//!                 .build(handle) {
-//!                 Ok(c) => c,
-//!                 Err(e) => return (target, Err(e.to_string())),
-//!             };
-//!             let result: Result<String, String> = match client.get(&oid).await {
+//!     // Create clients for each target
+//!     let clients: Vec<_> = targets.iter()
+//!         .map(|t| {
+//!             Client::builder(*t, Auth::v2c("public"))
+//!                 .build_with(&transport)
+//!         })
+//!         .collect::<Result<_, _>>()
+//!         .expect("failed to build clients");
+//!
+//!     // Poll all targets concurrently
+//!     let results = join_all(
+//!         clients.iter().map(|c| async {
+//!             match c.get(&sys_descr).await {
 //!                 Ok(vb) => Ok(vb.value.to_string()),
 //!                 Err(e) => Err(e.to_string()),
-//!             };
-//!             (target, result)
-//!         }
-//!     }).collect();
+//!             }
+//!         })
+//!     ).await;
 //!
-//!     join_all(futures).await
+//!     targets.into_iter().zip(results).collect()
 //! }
 //! ```
 //!
@@ -176,8 +175,7 @@
 //! For polling many targets with shared credentials, cache both:
 //!
 //! ```rust,no_run
-//! use async_snmp::{Auth, AuthProtocol, Client, EngineCache, MasterKeys, PrivProtocol, oid};
-//! use async_snmp::transport::UdpTransport;
+//! use async_snmp::{Auth, AuthProtocol, Client, EngineCache, MasterKeys, PrivProtocol, oid, UdpTransport};
 //! use std::sync::Arc;
 //!
 //! # async fn example() -> async_snmp::Result<()> {
@@ -189,16 +187,15 @@
 //! let engine_cache = Arc::new(EngineCache::new());
 //!
 //! // 3. Use shared transport for socket efficiency
-//! let transport = UdpTransport::bind("0.0.0.0:0").await?;
+//! let transport = UdpTransport::bind("[::]:0").await?;
 //!
 //! // Poll multiple targets - only ~1μs key localization per engine
 //! for target in ["192.0.2.1:161", "192.0.2.2:161"] {
-//!     let handle = transport.handle(target.parse().unwrap());
 //!     let auth = Auth::usm("snmpuser").with_master_keys(master_keys.clone());
 //!
 //!     let client = Client::builder(target, auth)
 //!         .engine_cache(engine_cache.clone())
-//!         .build(handle)?;
+//!         .build_with(&transport)?;
 //!
 //!     let result = client.get(&oid!(1, 3, 6, 1, 2, 1, 1, 1, 0)).await?;
 //!     println!("{}: {:?}", target, result.value);
