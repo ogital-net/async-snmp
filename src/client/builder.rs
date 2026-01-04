@@ -402,13 +402,13 @@ impl ClientBuilder {
                     if let (Some(auth_proto), Some(auth_pass)) =
                         (usm.auth_protocol, &usm.auth_password)
                     {
-                        security = security.auth(auth_proto, auth_pass.as_bytes().to_vec());
+                        security = security.auth(auth_proto, auth_pass.as_bytes());
                     }
 
                     if let (Some(priv_proto), Some(priv_pass)) =
                         (usm.priv_protocol, &usm.priv_password)
                     {
-                        security = security.privacy(priv_proto, priv_pass.as_bytes().to_vec());
+                        security = security.privacy(priv_proto, priv_pass.as_bytes());
                     }
                 }
 

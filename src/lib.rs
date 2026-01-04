@@ -425,7 +425,7 @@ pub use handler::{
 };
 pub use message::SecurityLevel;
 pub use notification::{
-    Notification, NotificationReceiver, NotificationReceiverBuilder, UsmUserConfig,
+    Notification, NotificationReceiver, NotificationReceiverBuilder, UsmConfig, UsmUserConfig,
     validate_notification_varbinds,
 };
 pub use oid::Oid;
@@ -435,7 +435,7 @@ pub use v3::{
     AuthProtocol, EngineCache, LocalizedKey, MasterKey, MasterKeys, ParseProtocolError,
     PrivProtocol,
 };
-pub use value::Value;
+pub use value::{RowStatus, StorageType, Value};
 pub use varbind::VarBind;
 pub use version::Version;
 

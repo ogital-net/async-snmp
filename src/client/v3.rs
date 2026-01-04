@@ -7,12 +7,12 @@ use crate::ber::Decoder;
 use crate::error::internal::{AuthErrorKind, CryptoErrorKind, DecodeErrorKind, EncodeErrorKind};
 use crate::error::{Error, ErrorStatus, Result};
 use crate::format::hex;
-use crate::message::{MsgFlags, MsgGlobalData, ScopedPdu, SecurityLevel, V3Message};
+use crate::message::{MsgFlags, MsgGlobalData, ScopedPdu, V3Message};
+use crate::notification::UsmConfig;
 use crate::pdu::{Pdu, PduType};
 use crate::transport::Transport;
-use crate::v3::{AuthProtocol, PrivProtocol};
 use crate::v3::{
-    LocalizedKey, PrivKey, UsmSecurityParams,
+    UsmSecurityParams,
     auth::{authenticate_message, verify_message},
     is_not_in_time_window_report, is_unknown_engine_id_report,
 };
@@ -22,137 +22,10 @@ use tracing::{Span, instrument};
 
 use super::Client;
 
-/// SNMPv3 security configuration.
+/// Type alias for backward compatibility.
 ///
-/// Stores the credentials needed for authenticated and/or encrypted communication.
-/// Keys are derived when the engine ID is discovered.
-///
-/// # Master Key Caching
-///
-/// When polling many engines with shared credentials, use
-/// [`MasterKeys`](crate::MasterKeys) to cache the expensive password-to-key
-/// derivation. When `master_keys` is set, passwords are ignored and keys are
-/// derived from the cached master keys.
-#[derive(Clone)]
-pub struct V3SecurityConfig {
-    /// Username for USM authentication
-    pub username: Bytes,
-    /// Authentication protocol and password
-    pub auth: Option<(AuthProtocol, Vec<u8>)>,
-    /// Privacy protocol and password
-    pub privacy: Option<(PrivProtocol, Vec<u8>)>,
-    /// Pre-computed master keys for efficient key derivation
-    pub master_keys: Option<crate::v3::MasterKeys>,
-}
-
-impl V3SecurityConfig {
-    /// Create a new V3 security config with just a username (noAuthNoPriv).
-    pub fn new(username: impl Into<Bytes>) -> Self {
-        Self {
-            username: username.into(),
-            auth: None,
-            privacy: None,
-            master_keys: None,
-        }
-    }
-
-    /// Add authentication (authNoPriv or authPriv).
-    pub fn auth(mut self, protocol: AuthProtocol, password: impl Into<Vec<u8>>) -> Self {
-        self.auth = Some((protocol, password.into()));
-        self
-    }
-
-    /// Add privacy/encryption (authPriv).
-    pub fn privacy(mut self, protocol: PrivProtocol, password: impl Into<Vec<u8>>) -> Self {
-        self.privacy = Some((protocol, password.into()));
-        self
-    }
-
-    /// Use pre-computed master keys for efficient key derivation.
-    ///
-    /// When set, passwords are ignored and keys are derived from the cached
-    /// master keys. This avoids the expensive ~850μs password expansion for
-    /// each engine.
-    pub fn with_master_keys(mut self, master_keys: crate::v3::MasterKeys) -> Self {
-        self.master_keys = Some(master_keys);
-        self
-    }
-
-    /// Get the security level based on configured auth/privacy.
-    pub fn security_level(&self) -> SecurityLevel {
-        // Check master_keys first, then fall back to auth/privacy
-        if let Some(ref master_keys) = self.master_keys {
-            if master_keys.priv_protocol().is_some() {
-                return SecurityLevel::AuthPriv;
-            }
-            return SecurityLevel::AuthNoPriv;
-        }
-
-        match (&self.auth, &self.privacy) {
-            (None, _) => SecurityLevel::NoAuthNoPriv,
-            (Some(_), None) => SecurityLevel::AuthNoPriv,
-            (Some(_), Some(_)) => SecurityLevel::AuthPriv,
-        }
-    }
-
-    /// Derive localized keys for a specific engine ID.
-    ///
-    /// If master keys are configured, uses the cached master keys for efficient
-    /// localization (~1μs). Otherwise, performs full password-to-key derivation
-    /// (~850μs for SHA-256).
-    pub fn derive_keys(&self, engine_id: &[u8]) -> V3DerivedKeys {
-        // Use master keys if available (efficient path)
-        if let Some(ref master_keys) = self.master_keys {
-            tracing::trace!(target: "async_snmp::client", { engine_id_len = engine_id.len(), auth_protocol = ?master_keys.auth_protocol(), priv_protocol = ?master_keys.priv_protocol() }, "localizing from cached master keys");
-            let (auth_key, priv_key) = master_keys.localize(engine_id);
-            tracing::trace!(target: "async_snmp::client", "key localization complete");
-            return V3DerivedKeys {
-                auth_key: Some(auth_key),
-                priv_key,
-            };
-        }
-
-        // Fall back to password-based derivation
-        tracing::trace!(target: "async_snmp::client", { engine_id_len = engine_id.len(), has_auth = self.auth.is_some(), has_priv = self.privacy.is_some() }, "deriving localized keys from passwords");
-
-        let auth_key = self.auth.as_ref().map(|(protocol, password)| {
-            tracing::trace!(target: "async_snmp::client", { auth_protocol = ?protocol }, "deriving auth key");
-            LocalizedKey::from_password(*protocol, password, engine_id)
-        });
-
-        let priv_key = match (&self.auth, &self.privacy) {
-            (Some((auth_protocol, _)), Some((priv_protocol, priv_password))) => {
-                tracing::trace!(target: "async_snmp::client", { priv_protocol = ?priv_protocol }, "deriving privacy key");
-                Some(PrivKey::from_password(
-                    *auth_protocol,
-                    *priv_protocol,
-                    priv_password,
-                    engine_id,
-                ))
-            }
-            _ => None,
-        };
-
-        tracing::trace!(target: "async_snmp::client", "key derivation complete");
-        V3DerivedKeys { auth_key, priv_key }
-    }
-}
-
-impl std::fmt::Debug for V3SecurityConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("V3SecurityConfig")
-            .field("username", &String::from_utf8_lossy(&self.username))
-            .field("auth", &self.auth.as_ref().map(|(p, _)| p))
-            .field("privacy", &self.privacy.as_ref().map(|(p, _)| p))
-            .finish()
-    }
-}
-
-/// Derived keys for a specific engine ID.
-pub struct V3DerivedKeys {
-    pub auth_key: Option<LocalizedKey>,
-    pub priv_key: Option<PrivKey>,
-}
+/// Use [`UsmConfig`] directly for new code.
+pub type V3SecurityConfig = UsmConfig;
 
 // V3-specific Client implementation
 impl<T: Transport> Client<T> {

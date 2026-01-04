@@ -59,7 +59,8 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tracing::{Span, instrument};
 
-pub use v3::{V3DerivedKeys, V3SecurityConfig};
+pub use crate::notification::DerivedKeys;
+pub use v3::V3SecurityConfig;
 pub use walk::{BulkWalk, OidOrdering, Walk, WalkMode, WalkStream};
 
 /// SNMP client.
@@ -76,7 +77,7 @@ struct ClientInner<T: Transport> {
     /// Cached engine state (V3)
     engine_state: RwLock<Option<EngineState>>,
     /// Derived keys for this engine (V3)
-    derived_keys: RwLock<Option<V3DerivedKeys>>,
+    derived_keys: RwLock<Option<DerivedKeys>>,
     /// Salt counter for privacy (V3)
     salt_counter: SaltCounter,
     /// Shared engine cache (V3, optional)

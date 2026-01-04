@@ -72,8 +72,7 @@ use crate::varbind::VarBind;
 use crate::version::Version;
 
 // Re-exports
-pub(crate) use types::DerivedKeys;
-pub use types::UsmUserConfig;
+pub use types::{DerivedKeys, UsmConfig, UsmUserConfig};
 pub use varbind::validate_notification_varbinds;
 
 /// Well-known OIDs for notification varbinds.

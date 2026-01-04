@@ -1,49 +1,79 @@
-//! USM user configuration types for notification receiver.
+//! USM configuration types for SNMPv3 authentication.
 //!
-//! These types store authentication and privacy settings for SNMPv3 notification handling.
+//! These types store authentication and privacy settings for SNMPv3 operations,
+//! used by both the client and notification receiver.
 
 use bytes::Bytes;
 
 use crate::message::SecurityLevel;
 use crate::v3::{AuthProtocol, LocalizedKey, PrivKey, PrivProtocol};
 
-/// USM user credentials for V3 notification handling.
+/// USM user credentials for SNMPv3 authentication.
 ///
-/// Stores the authentication and privacy settings for a single USM user.
+/// Stores the credentials needed for authenticated and/or encrypted communication.
+/// Keys are derived when the engine ID is discovered.
+///
+/// # Master Key Caching
+///
+/// When polling many engines with shared credentials, use
+/// [`MasterKeys`](crate::MasterKeys) to cache the expensive password-to-key
+/// derivation. When `master_keys` is set, passwords are ignored and keys are
+/// derived from the cached master keys.
 #[derive(Clone)]
-pub struct UsmUserConfig {
-    /// Username
+pub struct UsmConfig {
+    /// Username for USM authentication
     pub username: Bytes,
     /// Authentication protocol and password
     pub auth: Option<(AuthProtocol, Vec<u8>)>,
     /// Privacy protocol and password
     pub privacy: Option<(PrivProtocol, Vec<u8>)>,
+    /// Pre-computed master keys for efficient key derivation
+    pub master_keys: Option<crate::v3::MasterKeys>,
 }
 
-impl UsmUserConfig {
-    /// Create a new USM user config with no authentication (noAuthNoPriv).
+impl UsmConfig {
+    /// Create a new USM config with just a username (noAuthNoPriv).
     pub fn new(username: impl Into<Bytes>) -> Self {
         Self {
             username: username.into(),
             auth: None,
             privacy: None,
+            master_keys: None,
         }
     }
 
     /// Add authentication (authNoPriv or authPriv).
-    pub fn auth(mut self, protocol: AuthProtocol, password: &[u8]) -> Self {
-        self.auth = Some((protocol, password.to_vec()));
+    pub fn auth(mut self, protocol: AuthProtocol, password: impl AsRef<[u8]>) -> Self {
+        self.auth = Some((protocol, password.as_ref().to_vec()));
         self
     }
 
     /// Add privacy/encryption (authPriv).
-    pub fn privacy(mut self, protocol: PrivProtocol, password: &[u8]) -> Self {
-        self.privacy = Some((protocol, password.to_vec()));
+    pub fn privacy(mut self, protocol: PrivProtocol, password: impl AsRef<[u8]>) -> Self {
+        self.privacy = Some((protocol, password.as_ref().to_vec()));
+        self
+    }
+
+    /// Use pre-computed master keys for efficient key derivation.
+    ///
+    /// When set, passwords are ignored and keys are derived from the cached
+    /// master keys. This avoids the expensive ~850us password expansion for
+    /// each engine.
+    pub fn with_master_keys(mut self, master_keys: crate::v3::MasterKeys) -> Self {
+        self.master_keys = Some(master_keys);
         self
     }
 
     /// Get the security level based on configured auth/privacy.
     pub fn security_level(&self) -> SecurityLevel {
+        // Check master_keys first, then fall back to auth/privacy
+        if let Some(ref master_keys) = self.master_keys {
+            if master_keys.priv_protocol().is_some() {
+                return SecurityLevel::AuthPriv;
+            }
+            return SecurityLevel::AuthNoPriv;
+        }
+
         match (&self.auth, &self.privacy) {
             (None, _) => SecurityLevel::NoAuthNoPriv,
             (Some(_), None) => SecurityLevel::AuthNoPriv,
@@ -51,37 +81,76 @@ impl UsmUserConfig {
         }
     }
 
-    /// Derive keys localized to a specific engine ID.
-    pub(crate) fn derive_keys(&self, engine_id: &[u8]) -> DerivedKeys {
+    /// Derive localized keys for a specific engine ID.
+    ///
+    /// If master keys are configured, uses the cached master keys for efficient
+    /// localization (~1us). Otherwise, performs full password-to-key derivation
+    /// (~850us for SHA-256).
+    pub fn derive_keys(&self, engine_id: &[u8]) -> DerivedKeys {
+        // Use master keys if available (efficient path)
+        if let Some(ref master_keys) = self.master_keys {
+            tracing::trace!(target: "async_snmp::client", { engine_id_len = engine_id.len(), auth_protocol = ?master_keys.auth_protocol(), priv_protocol = ?master_keys.priv_protocol() }, "localizing from cached master keys");
+            let (auth_key, priv_key) = master_keys.localize(engine_id);
+            tracing::trace!(target: "async_snmp::client", "key localization complete");
+            return DerivedKeys {
+                auth_key: Some(auth_key),
+                priv_key,
+            };
+        }
+
+        // Fall back to password-based derivation
+        tracing::trace!(target: "async_snmp::client", { engine_id_len = engine_id.len(), has_auth = self.auth.is_some(), has_priv = self.privacy.is_some() }, "deriving localized keys from passwords");
+
         let auth_key = self.auth.as_ref().map(|(protocol, password)| {
+            tracing::trace!(target: "async_snmp::client", { auth_protocol = ?protocol }, "deriving auth key");
             LocalizedKey::from_password(*protocol, password, engine_id)
         });
 
         let priv_key = match (&self.auth, &self.privacy) {
-            (Some((auth_protocol, _)), Some((priv_protocol, priv_password))) => Some(
-                PrivKey::from_password(*auth_protocol, *priv_protocol, priv_password, engine_id),
-            ),
+            (Some((auth_protocol, _)), Some((priv_protocol, priv_password))) => {
+                tracing::trace!(target: "async_snmp::client", { priv_protocol = ?priv_protocol }, "deriving privacy key");
+                Some(PrivKey::from_password(
+                    *auth_protocol,
+                    *priv_protocol,
+                    priv_password,
+                    engine_id,
+                ))
+            }
             _ => None,
         };
 
+        tracing::trace!(target: "async_snmp::client", "key derivation complete");
         DerivedKeys { auth_key, priv_key }
     }
 }
 
-impl std::fmt::Debug for UsmUserConfig {
+impl std::fmt::Debug for UsmConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UsmUserConfig")
+        f.debug_struct("UsmConfig")
             .field("username", &String::from_utf8_lossy(&self.username))
             .field("auth", &self.auth.as_ref().map(|(p, _)| p))
             .field("privacy", &self.privacy.as_ref().map(|(p, _)| p))
+            .field(
+                "master_keys",
+                &self.master_keys.as_ref().map(|mk| {
+                    format!(
+                        "MasterKeys({:?}, {:?})",
+                        mk.auth_protocol(),
+                        mk.priv_protocol()
+                    )
+                }),
+            )
             .finish()
     }
 }
 
+/// Type alias for backward compatibility.
+pub type UsmUserConfig = UsmConfig;
+
 /// Derived keys for a specific engine ID.
 ///
-/// Used internally by notification receiver and agent for V3 authentication.
-pub(crate) struct DerivedKeys {
+/// Used internally for V3 authentication in both client and notification receiver.
+pub struct DerivedKeys {
     /// Localized authentication key
     pub auth_key: Option<LocalizedKey>,
     /// Privacy key
