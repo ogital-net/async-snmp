@@ -9,10 +9,166 @@ use crate::format::hex;
 use crate::oid::Oid;
 use bytes::Bytes;
 
+/// RFC 2579 RowStatus textual convention.
+///
+/// Used by SNMP tables to control row creation, modification, and deletion.
+/// The state machine for RowStatus is defined in RFC 2579 Section 7.1.
+///
+/// # State Transitions
+///
+/// | Current State | Set to | Result |
+/// |--------------|--------|--------|
+/// | (none) | createAndGo | row created in `active` state |
+/// | (none) | createAndWait | row created in `notInService` or `notReady` |
+/// | notInService | active | row becomes operational |
+/// | notReady | active | error (row must first be notInService) |
+/// | active | notInService | row becomes inactive |
+/// | any | destroy | row is deleted |
+///
+/// # Example
+///
+/// ```
+/// use async_snmp::{Value, RowStatus};
+///
+/// // Reading a RowStatus column
+/// let value = Value::Integer(1);
+/// assert_eq!(value.as_row_status(), Some(RowStatus::Active));
+///
+/// // Creating a value to write
+/// let create: Value = RowStatus::CreateAndGo.into();
+/// assert_eq!(create, Value::Integer(4));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RowStatus {
+    /// Row is operational and available for use.
+    Active = 1,
+    /// Row exists but is not operational (e.g., being modified).
+    NotInService = 2,
+    /// Row exists but required columns are missing or invalid.
+    NotReady = 3,
+    /// Request to create a new row that immediately becomes active.
+    CreateAndGo = 4,
+    /// Request to create a new row that starts in notInService/notReady.
+    CreateAndWait = 5,
+    /// Request to delete an existing row.
+    Destroy = 6,
+}
+
+impl RowStatus {
+    /// Convert an integer value to RowStatus.
+    ///
+    /// Returns `None` for values outside the valid range (1-6).
+    pub fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Active),
+            2 => Some(Self::NotInService),
+            3 => Some(Self::NotReady),
+            4 => Some(Self::CreateAndGo),
+            5 => Some(Self::CreateAndWait),
+            6 => Some(Self::Destroy),
+            _ => None,
+        }
+    }
+}
+
+impl From<RowStatus> for Value {
+    fn from(status: RowStatus) -> Self {
+        Value::Integer(status as i32)
+    }
+}
+
+impl std::fmt::Display for RowStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::NotInService => write!(f, "notInService"),
+            Self::NotReady => write!(f, "notReady"),
+            Self::CreateAndGo => write!(f, "createAndGo"),
+            Self::CreateAndWait => write!(f, "createAndWait"),
+            Self::Destroy => write!(f, "destroy"),
+        }
+    }
+}
+
+/// RFC 2579 StorageType textual convention.
+///
+/// Describes how an SNMP row's data is stored and persisted.
+///
+/// # Persistence Levels
+///
+/// | Type | Survives Reboot | Writable |
+/// |------|-----------------|----------|
+/// | other | undefined | varies |
+/// | volatile | no | yes |
+/// | nonVolatile | yes | yes |
+/// | permanent | yes | limited |
+/// | readOnly | yes | no |
+///
+/// # Example
+///
+/// ```
+/// use async_snmp::{Value, StorageType};
+///
+/// // Reading a StorageType column
+/// let value = Value::Integer(3);
+/// assert_eq!(value.as_storage_type(), Some(StorageType::NonVolatile));
+///
+/// // Creating a value to write
+/// let storage: Value = StorageType::Volatile.into();
+/// assert_eq!(storage, Value::Integer(2));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StorageType {
+    /// Implementation-specific storage.
+    Other = 1,
+    /// Lost on reboot; can be modified.
+    Volatile = 2,
+    /// Survives reboot; can be modified.
+    NonVolatile = 3,
+    /// Survives reboot; limited modifications allowed.
+    Permanent = 4,
+    /// Survives reboot; cannot be modified.
+    ReadOnly = 5,
+}
+
+impl StorageType {
+    /// Convert an integer value to StorageType.
+    ///
+    /// Returns `None` for values outside the valid range (1-5).
+    pub fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Other),
+            2 => Some(Self::Volatile),
+            3 => Some(Self::NonVolatile),
+            4 => Some(Self::Permanent),
+            5 => Some(Self::ReadOnly),
+            _ => None,
+        }
+    }
+}
+
+impl From<StorageType> for Value {
+    fn from(storage: StorageType) -> Self {
+        Value::Integer(storage as i32)
+    }
+}
+
+impl std::fmt::Display for StorageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Other => write!(f, "other"),
+            Self::Volatile => write!(f, "volatile"),
+            Self::NonVolatile => write!(f, "nonVolatile"),
+            Self::Permanent => write!(f, "permanent"),
+            Self::ReadOnly => write!(f, "readOnly"),
+        }
+    }
+}
+
 /// SNMP value.
 ///
 /// Represents all SNMP data types including SMIv2 types and exception values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Value {
     /// INTEGER (ASN.1 primitive, signed 32-bit)
@@ -314,6 +470,384 @@ impl Value {
         }
     }
 
+    /// Extract any numeric value as f64.
+    ///
+    /// Useful for metrics systems and graphing where all values become f64.
+    /// Counter64 values above 2^53 may lose precision.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    ///
+    /// assert_eq!(Value::Integer(42).as_f64(), Some(42.0));
+    /// assert_eq!(Value::Counter32(1000).as_f64(), Some(1000.0));
+    /// assert_eq!(Value::Counter64(10_000_000_000).as_f64(), Some(10_000_000_000.0));
+    /// assert_eq!(Value::Null.as_f64(), None);
+    /// ```
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Integer(v) => Some(*v as f64),
+            Value::Counter32(v) | Value::Gauge32(v) | Value::TimeTicks(v) => Some(*v as f64),
+            Value::Counter64(v) => Some(*v as f64),
+            _ => None,
+        }
+    }
+
+    /// Extract Counter64 as f64 with wrapping at 2^53.
+    ///
+    /// Prevents precision loss for large counters. IEEE 754 double-precision
+    /// floats have a 53-bit mantissa, so Counter64 values above 2^53 lose
+    /// precision when converted directly. This method wraps at the mantissa
+    /// limit, preserving precision for rate calculations.
+    ///
+    /// Use when computing rates where precision matters more than absolute
+    /// magnitude. For Counter32 and other types, behaves identically to `as_f64()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    ///
+    /// // Small values behave the same as as_f64()
+    /// assert_eq!(Value::Counter64(1000).as_f64_wrapped(), Some(1000.0));
+    ///
+    /// // Large Counter64 wraps at 2^53
+    /// let large = 1u64 << 54; // 2^54
+    /// let wrapped = Value::Counter64(large).as_f64_wrapped().unwrap();
+    /// assert!(wrapped < large as f64); // Wrapped to smaller value
+    /// ```
+    pub fn as_f64_wrapped(&self) -> Option<f64> {
+        const MANTISSA_LIMIT: u64 = 1 << 53;
+        match self {
+            Value::Counter64(v) => Some((*v % MANTISSA_LIMIT) as f64),
+            _ => self.as_f64(),
+        }
+    }
+
+    /// Extract integer with implied decimal places.
+    ///
+    /// Many SNMP sensors report fixed-point values as integers with an
+    /// implied decimal point. This method applies the scaling directly,
+    /// returning a usable f64 value.
+    ///
+    /// This complements `format_with_hint("d-2")` which returns a String
+    /// for display. Use `as_decimal()` when you need the numeric value
+    /// for computation or metrics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    ///
+    /// // Temperature 2350 with places=2 → 23.50
+    /// assert_eq!(Value::Integer(2350).as_decimal(2), Some(23.50));
+    ///
+    /// // Percentage 9999 with places=2 → 99.99
+    /// assert_eq!(Value::Integer(9999).as_decimal(2), Some(99.99));
+    ///
+    /// // Voltage 12500 with places=3 → 12.500
+    /// assert_eq!(Value::Integer(12500).as_decimal(3), Some(12.5));
+    ///
+    /// // Non-numeric types return None
+    /// assert_eq!(Value::Null.as_decimal(2), None);
+    /// ```
+    pub fn as_decimal(&self, places: u8) -> Option<f64> {
+        let divisor = 10f64.powi(places as i32);
+        self.as_f64().map(|v| v / divisor)
+    }
+
+    /// TimeTicks as Duration (hundredths of seconds).
+    ///
+    /// TimeTicks represents time in hundredths of a second. This method
+    /// converts to `std::time::Duration` for idiomatic Rust time handling.
+    ///
+    /// Common use: sysUpTime, interface last-change timestamps.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use std::time::Duration;
+    ///
+    /// // 360000 ticks = 3600 seconds = 1 hour
+    /// let uptime = Value::TimeTicks(360000);
+    /// assert_eq!(uptime.as_duration(), Some(Duration::from_secs(3600)));
+    ///
+    /// // Non-TimeTicks return None
+    /// assert_eq!(Value::Integer(100).as_duration(), None);
+    /// ```
+    pub fn as_duration(&self) -> Option<std::time::Duration> {
+        match self {
+            Value::TimeTicks(v) => Some(std::time::Duration::from_millis(*v as u64 * 10)),
+            _ => None,
+        }
+    }
+
+    /// Extract IEEE 754 float from Opaque value (net-snmp extension).
+    ///
+    /// Decodes the two-layer ASN.1 structure used by net-snmp to encode floats
+    /// inside Opaque values: extension tag (0x9f) + float type (0x78) + length (4)
+    /// + 4 bytes IEEE 754 big-endian float.
+    ///
+    /// This is a non-standard extension supported by net-snmp for agents that
+    /// need to report floating-point values. Standard SNMP uses implied decimal
+    /// points via DISPLAY-HINT instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use bytes::Bytes;
+    ///
+    /// // Opaque-encoded float for pi
+    /// let data = Bytes::from_static(&[0x9f, 0x78, 0x04, 0x40, 0x49, 0x0f, 0xdb]);
+    /// let value = Value::Opaque(data);
+    /// let pi = value.as_opaque_float().unwrap();
+    /// assert!((pi - std::f32::consts::PI).abs() < 0.0001);
+    ///
+    /// // Non-Opaque or wrong format returns None
+    /// assert_eq!(Value::Integer(42).as_opaque_float(), None);
+    /// ```
+    pub fn as_opaque_float(&self) -> Option<f32> {
+        match self {
+            Value::Opaque(data)
+                if data.len() >= 7
+                && data[0] == 0x9f       // ASN_OPAQUE_TAG1 (extension)
+                && data[1] == 0x78       // ASN_OPAQUE_FLOAT
+                && data[2] == 0x04 =>
+            {
+                // length = 4
+                let bytes: [u8; 4] = data[3..7].try_into().ok()?;
+                Some(f32::from_be_bytes(bytes))
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract IEEE 754 double from Opaque value (net-snmp extension).
+    ///
+    /// Decodes the two-layer ASN.1 structure used by net-snmp to encode doubles
+    /// inside Opaque values: extension tag (0x9f) + double type (0x79) + length (8)
+    /// + 8 bytes IEEE 754 big-endian double.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use bytes::Bytes;
+    ///
+    /// // Opaque-encoded double for pi ≈ 3.141592653589793
+    /// let data = Bytes::from_static(&[
+    ///     0x9f, 0x79, 0x08,  // extension tag, double type, length
+    ///     0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18  // IEEE 754 double
+    /// ]);
+    /// let value = Value::Opaque(data);
+    /// let pi = value.as_opaque_double().unwrap();
+    /// assert!((pi - std::f64::consts::PI).abs() < 1e-10);
+    /// ```
+    pub fn as_opaque_double(&self) -> Option<f64> {
+        match self {
+            Value::Opaque(data)
+                if data.len() >= 11
+                && data[0] == 0x9f       // ASN_OPAQUE_TAG1 (extension)
+                && data[1] == 0x79       // ASN_OPAQUE_DOUBLE
+                && data[2] == 0x08 =>
+            {
+                // length = 8
+                let bytes: [u8; 8] = data[3..11].try_into().ok()?;
+                Some(f64::from_be_bytes(bytes))
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract Counter64 from Opaque value (net-snmp extension for SNMPv1).
+    ///
+    /// SNMPv1 doesn't support Counter64 natively. net-snmp encodes 64-bit
+    /// counters inside Opaque for SNMPv1 compatibility using extension tag
+    /// (0x9f) + counter64 type (0x76) + length + big-endian bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use bytes::Bytes;
+    ///
+    /// // Opaque-encoded Counter64 with value 0x0123456789ABCDEF
+    /// let data = Bytes::from_static(&[
+    ///     0x9f, 0x76, 0x08,  // extension tag, counter64 type, length
+    ///     0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF
+    /// ]);
+    /// let value = Value::Opaque(data);
+    /// assert_eq!(value.as_opaque_counter64(), Some(0x0123456789ABCDEF));
+    /// ```
+    pub fn as_opaque_counter64(&self) -> Option<u64> {
+        self.as_opaque_unsigned(0x76)
+    }
+
+    /// Extract signed 64-bit integer from Opaque value (net-snmp extension).
+    ///
+    /// Uses extension tag (0x9f) + i64 type (0x7a) + length + big-endian bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use bytes::Bytes;
+    ///
+    /// // Opaque-encoded I64 with value -1 (0xFFFFFFFFFFFFFFFF)
+    /// let data = Bytes::from_static(&[
+    ///     0x9f, 0x7a, 0x08,
+    ///     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+    /// ]);
+    /// let value = Value::Opaque(data);
+    /// assert_eq!(value.as_opaque_i64(), Some(-1i64));
+    /// ```
+    pub fn as_opaque_i64(&self) -> Option<i64> {
+        match self {
+            Value::Opaque(data)
+                if data.len() >= 4
+                && data[0] == 0x9f       // ASN_OPAQUE_TAG1 (extension)
+                && data[1] == 0x7a =>
+            {
+                // ASN_OPAQUE_I64
+                let len = data[2] as usize;
+                if data.len() < 3 + len || len == 0 || len > 8 {
+                    return None;
+                }
+                let bytes = &data[3..3 + len];
+                // Sign-extend from the actual length
+                let is_negative = bytes[0] & 0x80 != 0;
+                let mut value: i64 = if is_negative { -1 } else { 0 };
+                for &byte in bytes {
+                    value = (value << 8) | (byte as i64);
+                }
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract unsigned 64-bit integer from Opaque value (net-snmp extension).
+    ///
+    /// Uses extension tag (0x9f) + u64 type (0x7b) + length + big-endian bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    /// use bytes::Bytes;
+    ///
+    /// // Opaque-encoded U64 with value 0x0123456789ABCDEF
+    /// let data = Bytes::from_static(&[
+    ///     0x9f, 0x7b, 0x08,
+    ///     0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF
+    /// ]);
+    /// let value = Value::Opaque(data);
+    /// assert_eq!(value.as_opaque_u64(), Some(0x0123456789ABCDEF));
+    /// ```
+    pub fn as_opaque_u64(&self) -> Option<u64> {
+        self.as_opaque_unsigned(0x7b)
+    }
+
+    /// Helper for extracting unsigned 64-bit values from Opaque (Counter64, U64).
+    fn as_opaque_unsigned(&self, expected_type: u8) -> Option<u64> {
+        match self {
+            Value::Opaque(data)
+                if data.len() >= 4
+                && data[0] == 0x9f           // ASN_OPAQUE_TAG1 (extension)
+                && data[1] == expected_type =>
+            {
+                let len = data[2] as usize;
+                if data.len() < 3 + len || len == 0 || len > 8 {
+                    return None;
+                }
+                let bytes = &data[3..3 + len];
+                let mut value: u64 = 0;
+                for &byte in bytes {
+                    value = (value << 8) | (byte as u64);
+                }
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract RFC 2579 TruthValue as bool.
+    ///
+    /// TruthValue is an INTEGER with: true(1), false(2).
+    /// Returns `None` for non-Integer values or values outside {1, 2}.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::Value;
+    ///
+    /// assert_eq!(Value::Integer(1).as_truth_value(), Some(true));
+    /// assert_eq!(Value::Integer(2).as_truth_value(), Some(false));
+    ///
+    /// // Invalid values return None
+    /// assert_eq!(Value::Integer(0).as_truth_value(), None);
+    /// assert_eq!(Value::Integer(3).as_truth_value(), None);
+    /// assert_eq!(Value::Null.as_truth_value(), None);
+    /// ```
+    pub fn as_truth_value(&self) -> Option<bool> {
+        match self {
+            Value::Integer(1) => Some(true),
+            Value::Integer(2) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Extract RFC 2579 RowStatus.
+    ///
+    /// Returns `None` for non-Integer values or values outside {1-6}.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::{Value, RowStatus};
+    ///
+    /// assert_eq!(Value::Integer(1).as_row_status(), Some(RowStatus::Active));
+    /// assert_eq!(Value::Integer(6).as_row_status(), Some(RowStatus::Destroy));
+    ///
+    /// // Invalid values return None
+    /// assert_eq!(Value::Integer(0).as_row_status(), None);
+    /// assert_eq!(Value::Integer(7).as_row_status(), None);
+    /// assert_eq!(Value::Null.as_row_status(), None);
+    /// ```
+    pub fn as_row_status(&self) -> Option<RowStatus> {
+        match self {
+            Value::Integer(v) => RowStatus::from_i32(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract RFC 2579 StorageType.
+    ///
+    /// Returns `None` for non-Integer values or values outside {1-5}.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_snmp::{Value, StorageType};
+    ///
+    /// assert_eq!(Value::Integer(2).as_storage_type(), Some(StorageType::Volatile));
+    /// assert_eq!(Value::Integer(3).as_storage_type(), Some(StorageType::NonVolatile));
+    ///
+    /// // Invalid values return None
+    /// assert_eq!(Value::Integer(0).as_storage_type(), None);
+    /// assert_eq!(Value::Integer(6).as_storage_type(), None);
+    /// assert_eq!(Value::Null.as_storage_type(), None);
+    /// ```
+    pub fn as_storage_type(&self) -> Option<StorageType> {
+        match self {
+            Value::Integer(v) => StorageType::from_i32(*v),
+            _ => None,
+        }
+    }
+
     /// Check if this is an exception value.
     pub fn is_exception(&self) -> bool {
         matches!(
@@ -360,10 +894,13 @@ impl Value {
         }
     }
 
-    /// Format an OctetString or Opaque value using RFC 2579 DISPLAY-HINT.
+    /// Format an OctetString, Opaque, or Integer value using RFC 2579 DISPLAY-HINT.
     ///
-    /// Returns `None` if this is not an OctetString or Opaque value.
-    /// On invalid hint syntax, falls back to hex encoding.
+    /// For OctetString and Opaque, uses the OCTET STRING hint format (e.g., "1x:").
+    /// For Integer, uses the INTEGER hint format (e.g., "d-2" for decimal places).
+    ///
+    /// Returns `None` for other value types or invalid hint syntax.
+    /// On invalid OCTET STRING hint syntax, falls back to hex encoding.
     ///
     /// # Example
     ///
@@ -371,16 +908,23 @@ impl Value {
     /// use async_snmp::Value;
     /// use bytes::Bytes;
     ///
+    /// // OctetString: MAC address
     /// let mac = Value::OctetString(Bytes::from_static(&[0x00, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e]));
     /// assert_eq!(mac.format_with_hint("1x:"), Some("00:1a:2b:3c:4d:5e".into()));
     ///
-    /// let integer = Value::Integer(42);
-    /// assert_eq!(integer.format_with_hint("1d"), None);
+    /// // Integer: Temperature with 2 decimal places
+    /// let temp = Value::Integer(2350);
+    /// assert_eq!(temp.format_with_hint("d-2"), Some("23.50".into()));
+    ///
+    /// // Integer: Hex format
+    /// let int = Value::Integer(255);
+    /// assert_eq!(int.format_with_hint("x"), Some("ff".into()));
     /// ```
     pub fn format_with_hint(&self, hint: &str) -> Option<String> {
         match self {
             Value::OctetString(bytes) => Some(crate::format::display_hint::apply(hint, bytes)),
             Value::Opaque(bytes) => Some(crate::format::display_hint::apply(hint, bytes)),
+            Value::Integer(v) => crate::format::display_hint::apply_integer(hint, *v),
             _ => None,
         }
     }
@@ -1124,6 +1668,24 @@ mod tests {
     }
 
     // ========================================================================
+    // Eq and Hash Tests
+    // ========================================================================
+
+    #[test]
+    fn test_value_eq_and_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(Value::Integer(42));
+        set.insert(Value::Integer(42)); // Duplicate
+        set.insert(Value::Integer(100));
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&Value::Integer(42)));
+        assert!(set.contains(&Value::Integer(100)));
+    }
+
+    // ========================================================================
     // Decode Error Tests
     // ========================================================================
 
@@ -1153,5 +1715,327 @@ mod tests {
         let result = Value::decode(&mut decoder);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Value::NoSuchObject);
+    }
+
+    // ========================================================================
+    // Numeric Extraction Method Tests
+    // ========================================================================
+
+    #[test]
+    fn test_as_f64() {
+        assert_eq!(Value::Integer(42).as_f64(), Some(42.0));
+        assert_eq!(Value::Integer(-42).as_f64(), Some(-42.0));
+        assert_eq!(Value::Counter32(1000).as_f64(), Some(1000.0));
+        assert_eq!(Value::Gauge32(2000).as_f64(), Some(2000.0));
+        assert_eq!(Value::TimeTicks(3000).as_f64(), Some(3000.0));
+        assert_eq!(
+            Value::Counter64(10_000_000_000).as_f64(),
+            Some(10_000_000_000.0)
+        );
+        assert_eq!(Value::Null.as_f64(), None);
+        assert_eq!(
+            Value::OctetString(Bytes::from_static(b"test")).as_f64(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_as_f64_wrapped() {
+        // Small values behave same as as_f64()
+        assert_eq!(Value::Counter64(1000).as_f64_wrapped(), Some(1000.0));
+        assert_eq!(Value::Counter32(1000).as_f64_wrapped(), Some(1000.0));
+        assert_eq!(Value::Integer(42).as_f64_wrapped(), Some(42.0));
+
+        // Large Counter64 wraps at 2^53
+        let mantissa_limit = 1u64 << 53;
+        assert_eq!(Value::Counter64(mantissa_limit).as_f64_wrapped(), Some(0.0));
+        assert_eq!(
+            Value::Counter64(mantissa_limit + 1).as_f64_wrapped(),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn test_as_decimal() {
+        assert_eq!(Value::Integer(2350).as_decimal(2), Some(23.50));
+        assert_eq!(Value::Integer(9999).as_decimal(2), Some(99.99));
+        assert_eq!(Value::Integer(12500).as_decimal(3), Some(12.5));
+        assert_eq!(Value::Integer(-500).as_decimal(2), Some(-5.0));
+        assert_eq!(Value::Counter32(1000).as_decimal(1), Some(100.0));
+        assert_eq!(Value::Null.as_decimal(2), None);
+    }
+
+    #[test]
+    fn test_as_duration() {
+        use std::time::Duration;
+
+        // 100 ticks = 1 second
+        assert_eq!(
+            Value::TimeTicks(100).as_duration(),
+            Some(Duration::from_secs(1))
+        );
+        // 360000 ticks = 3600 seconds = 1 hour
+        assert_eq!(
+            Value::TimeTicks(360000).as_duration(),
+            Some(Duration::from_secs(3600))
+        );
+        // 1 tick = 10 milliseconds
+        assert_eq!(
+            Value::TimeTicks(1).as_duration(),
+            Some(Duration::from_millis(10))
+        );
+
+        // Non-TimeTicks return None
+        assert_eq!(Value::Integer(100).as_duration(), None);
+        assert_eq!(Value::Counter32(100).as_duration(), None);
+    }
+
+    // ========================================================================
+    // Opaque Sub-type Extraction Tests
+    // ========================================================================
+
+    #[test]
+    fn test_as_opaque_float() {
+        // Opaque-encoded float for pi ≈ 3.14159
+        // 0x40490fdb is IEEE 754 single-precision for ~3.14159
+        let data = Bytes::from_static(&[0x9f, 0x78, 0x04, 0x40, 0x49, 0x0f, 0xdb]);
+        let value = Value::Opaque(data);
+        let pi = value.as_opaque_float().unwrap();
+        assert!((pi - std::f32::consts::PI).abs() < 0.0001);
+
+        // Non-Opaque returns None
+        assert_eq!(Value::Integer(42).as_opaque_float(), None);
+
+        // Wrong subtype returns None
+        let wrong_type = Bytes::from_static(&[0x9f, 0x79, 0x04, 0x40, 0x49, 0x0f, 0xdb]);
+        assert_eq!(Value::Opaque(wrong_type).as_opaque_float(), None);
+
+        // Too short returns None
+        let short = Bytes::from_static(&[0x9f, 0x78, 0x04, 0x40, 0x49]);
+        assert_eq!(Value::Opaque(short).as_opaque_float(), None);
+    }
+
+    #[test]
+    fn test_as_opaque_double() {
+        // Opaque-encoded double for pi
+        // 0x400921fb54442d18 is IEEE 754 double-precision for pi
+        let data = Bytes::from_static(&[
+            0x9f, 0x79, 0x08, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18,
+        ]);
+        let value = Value::Opaque(data);
+        let pi = value.as_opaque_double().unwrap();
+        assert!((pi - std::f64::consts::PI).abs() < 1e-10);
+
+        // Non-Opaque returns None
+        assert_eq!(Value::Integer(42).as_opaque_double(), None);
+    }
+
+    #[test]
+    fn test_as_opaque_counter64() {
+        // 8-byte Counter64
+        let data = Bytes::from_static(&[
+            0x9f, 0x76, 0x08, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+        ]);
+        let value = Value::Opaque(data);
+        assert_eq!(value.as_opaque_counter64(), Some(0x0123456789ABCDEF));
+
+        // Shorter encoding (e.g., small value)
+        let small = Bytes::from_static(&[0x9f, 0x76, 0x01, 0x42]);
+        assert_eq!(Value::Opaque(small).as_opaque_counter64(), Some(0x42));
+
+        // Zero
+        let zero = Bytes::from_static(&[0x9f, 0x76, 0x01, 0x00]);
+        assert_eq!(Value::Opaque(zero).as_opaque_counter64(), Some(0));
+    }
+
+    #[test]
+    fn test_as_opaque_i64() {
+        // Positive value
+        let positive = Bytes::from_static(&[0x9f, 0x7a, 0x02, 0x01, 0x00]);
+        assert_eq!(Value::Opaque(positive).as_opaque_i64(), Some(256));
+
+        // Negative value (-1)
+        let minus_one = Bytes::from_static(&[0x9f, 0x7a, 0x01, 0xFF]);
+        assert_eq!(Value::Opaque(minus_one).as_opaque_i64(), Some(-1));
+
+        // Full 8-byte negative
+        let full_neg = Bytes::from_static(&[
+            0x9f, 0x7a, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ]);
+        assert_eq!(Value::Opaque(full_neg).as_opaque_i64(), Some(-1));
+
+        // i64::MIN
+        let min = Bytes::from_static(&[
+            0x9f, 0x7a, 0x08, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        assert_eq!(Value::Opaque(min).as_opaque_i64(), Some(i64::MIN));
+    }
+
+    #[test]
+    fn test_as_opaque_u64() {
+        // 8-byte U64
+        let data = Bytes::from_static(&[
+            0x9f, 0x7b, 0x08, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+        ]);
+        let value = Value::Opaque(data);
+        assert_eq!(value.as_opaque_u64(), Some(0x0123456789ABCDEF));
+
+        // u64::MAX
+        let max = Bytes::from_static(&[
+            0x9f, 0x7b, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ]);
+        assert_eq!(Value::Opaque(max).as_opaque_u64(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn test_format_with_hint_integer() {
+        // Decimal places
+        assert_eq!(
+            Value::Integer(2350).format_with_hint("d-2"),
+            Some("23.50".into())
+        );
+        assert_eq!(
+            Value::Integer(-500).format_with_hint("d-2"),
+            Some("-5.00".into())
+        );
+
+        // Basic formats
+        assert_eq!(Value::Integer(255).format_with_hint("x"), Some("ff".into()));
+        assert_eq!(Value::Integer(8).format_with_hint("o"), Some("10".into()));
+        assert_eq!(Value::Integer(5).format_with_hint("b"), Some("101".into()));
+        assert_eq!(Value::Integer(42).format_with_hint("d"), Some("42".into()));
+
+        // Invalid hint
+        assert_eq!(Value::Integer(42).format_with_hint("invalid"), None);
+
+        // Counter32 etc. still return None (only Integer supported for INTEGER hints)
+        assert_eq!(Value::Counter32(42).format_with_hint("d-2"), None);
+    }
+
+    #[test]
+    fn test_as_truth_value() {
+        // Valid TruthValue
+        assert_eq!(Value::Integer(1).as_truth_value(), Some(true));
+        assert_eq!(Value::Integer(2).as_truth_value(), Some(false));
+
+        // Invalid integers
+        assert_eq!(Value::Integer(0).as_truth_value(), None);
+        assert_eq!(Value::Integer(3).as_truth_value(), None);
+        assert_eq!(Value::Integer(-1).as_truth_value(), None);
+
+        // Non-Integer types
+        assert_eq!(Value::Null.as_truth_value(), None);
+        assert_eq!(Value::Counter32(1).as_truth_value(), None);
+        assert_eq!(Value::Gauge32(1).as_truth_value(), None);
+    }
+
+    // ========================================================================
+    // RowStatus Tests
+    // ========================================================================
+
+    #[test]
+    fn test_row_status_from_i32() {
+        assert_eq!(RowStatus::from_i32(1), Some(RowStatus::Active));
+        assert_eq!(RowStatus::from_i32(2), Some(RowStatus::NotInService));
+        assert_eq!(RowStatus::from_i32(3), Some(RowStatus::NotReady));
+        assert_eq!(RowStatus::from_i32(4), Some(RowStatus::CreateAndGo));
+        assert_eq!(RowStatus::from_i32(5), Some(RowStatus::CreateAndWait));
+        assert_eq!(RowStatus::from_i32(6), Some(RowStatus::Destroy));
+
+        // Invalid values
+        assert_eq!(RowStatus::from_i32(0), None);
+        assert_eq!(RowStatus::from_i32(7), None);
+        assert_eq!(RowStatus::from_i32(-1), None);
+    }
+
+    #[test]
+    fn test_row_status_into_value() {
+        let v: Value = RowStatus::Active.into();
+        assert_eq!(v, Value::Integer(1));
+
+        let v: Value = RowStatus::Destroy.into();
+        assert_eq!(v, Value::Integer(6));
+    }
+
+    #[test]
+    fn test_row_status_display() {
+        assert_eq!(format!("{}", RowStatus::Active), "active");
+        assert_eq!(format!("{}", RowStatus::NotInService), "notInService");
+        assert_eq!(format!("{}", RowStatus::NotReady), "notReady");
+        assert_eq!(format!("{}", RowStatus::CreateAndGo), "createAndGo");
+        assert_eq!(format!("{}", RowStatus::CreateAndWait), "createAndWait");
+        assert_eq!(format!("{}", RowStatus::Destroy), "destroy");
+    }
+
+    #[test]
+    fn test_as_row_status() {
+        // Valid RowStatus values
+        assert_eq!(Value::Integer(1).as_row_status(), Some(RowStatus::Active));
+        assert_eq!(Value::Integer(6).as_row_status(), Some(RowStatus::Destroy));
+
+        // Invalid integers
+        assert_eq!(Value::Integer(0).as_row_status(), None);
+        assert_eq!(Value::Integer(7).as_row_status(), None);
+
+        // Non-Integer types
+        assert_eq!(Value::Null.as_row_status(), None);
+        assert_eq!(Value::Counter32(1).as_row_status(), None);
+    }
+
+    // ========================================================================
+    // StorageType Tests
+    // ========================================================================
+
+    #[test]
+    fn test_storage_type_from_i32() {
+        assert_eq!(StorageType::from_i32(1), Some(StorageType::Other));
+        assert_eq!(StorageType::from_i32(2), Some(StorageType::Volatile));
+        assert_eq!(StorageType::from_i32(3), Some(StorageType::NonVolatile));
+        assert_eq!(StorageType::from_i32(4), Some(StorageType::Permanent));
+        assert_eq!(StorageType::from_i32(5), Some(StorageType::ReadOnly));
+
+        // Invalid values
+        assert_eq!(StorageType::from_i32(0), None);
+        assert_eq!(StorageType::from_i32(6), None);
+        assert_eq!(StorageType::from_i32(-1), None);
+    }
+
+    #[test]
+    fn test_storage_type_into_value() {
+        let v: Value = StorageType::Volatile.into();
+        assert_eq!(v, Value::Integer(2));
+
+        let v: Value = StorageType::NonVolatile.into();
+        assert_eq!(v, Value::Integer(3));
+    }
+
+    #[test]
+    fn test_storage_type_display() {
+        assert_eq!(format!("{}", StorageType::Other), "other");
+        assert_eq!(format!("{}", StorageType::Volatile), "volatile");
+        assert_eq!(format!("{}", StorageType::NonVolatile), "nonVolatile");
+        assert_eq!(format!("{}", StorageType::Permanent), "permanent");
+        assert_eq!(format!("{}", StorageType::ReadOnly), "readOnly");
+    }
+
+    #[test]
+    fn test_as_storage_type() {
+        // Valid StorageType values
+        assert_eq!(
+            Value::Integer(2).as_storage_type(),
+            Some(StorageType::Volatile)
+        );
+        assert_eq!(
+            Value::Integer(3).as_storage_type(),
+            Some(StorageType::NonVolatile)
+        );
+
+        // Invalid integers
+        assert_eq!(Value::Integer(0).as_storage_type(), None);
+        assert_eq!(Value::Integer(6).as_storage_type(), None);
+
+        // Non-Integer types
+        assert_eq!(Value::Null.as_storage_type(), None);
+        assert_eq!(Value::Counter32(1).as_storage_type(), None);
     }
 }
