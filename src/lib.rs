@@ -418,8 +418,9 @@ pub mod cli;
 // Re-exports for convenience
 pub use agent::{Agent, AgentBuilder, VacmBuilder, VacmConfig, View};
 pub use client::{
-    Auth, Backoff, BulkWalk, Client, ClientBuilder, ClientConfig, CommunityVersion, OidOrdering,
-    Retry, RetryBuilder, UsmAuth, UsmBuilder, Walk, WalkMode, WalkStream,
+    Auth, Backoff, BulkWalk, Client, ClientBuilder, ClientConfig, CommunityVersion,
+    DEFAULT_MAX_OIDS_PER_REQUEST, DEFAULT_MAX_REPETITIONS, DEFAULT_TIMEOUT, OidOrdering, Retry,
+    RetryBuilder, UsmAuth, UsmBuilder, Walk, WalkMode, WalkStream,
 };
 pub use error::{Error, ErrorStatus, Result, WalkAbortReason};
 pub use handler::{
@@ -433,7 +434,7 @@ pub use notification::{
 };
 pub use oid::Oid;
 pub use pdu::{GenericTrap, Pdu, PduType, TrapV1Pdu};
-pub use transport::{TcpTransport, Transport, UdpHandle, UdpTransport};
+pub use transport::{MAX_UDP_PAYLOAD, TcpTransport, Transport, UdpHandle, UdpTransport};
 pub use v3::{
     AuthProtocol, EngineCache, LocalizedKey, MasterKey, MasterKeys, ParseProtocolError,
     PrivProtocol,

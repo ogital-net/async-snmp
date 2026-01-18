@@ -31,6 +31,12 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
+/// Maximum UDP datagram payload size.
+///
+/// This is 65535 (max IP packet) minus 20 (IPv4 header) minus 8 (UDP header).
+/// Used as the default value for [`Transport::max_message_size()`].
+pub const MAX_UDP_PAYLOAD: u32 = 65507;
+
 /// Global request ID counter, initialized with random seed.
 ///
 /// Using a global counter ensures request IDs are unique across all
@@ -109,9 +115,9 @@ pub trait Transport: Send + Sync + Clone {
     /// Maximum message size this transport can handle.
     ///
     /// Used to cap agent-reported msgMaxSize values. Default is the maximum
-    /// UDP datagram payload (65507 bytes).
+    /// UDP datagram payload ([`MAX_UDP_PAYLOAD`]).
     fn max_message_size(&self) -> u32 {
-        65507
+        MAX_UDP_PAYLOAD
     }
 }
 

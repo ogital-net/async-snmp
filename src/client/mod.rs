@@ -62,6 +62,24 @@ use tracing::{Span, instrument};
 pub use crate::notification::{DerivedKeys, UsmConfig};
 pub use walk::{BulkWalk, OidOrdering, Walk, WalkMode, WalkStream};
 
+// ============================================================================
+// Default configuration constants
+// ============================================================================
+
+/// Default timeout for SNMP requests.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default maximum OIDs per request.
+///
+/// Requests with more OIDs than this limit are automatically split into
+/// multiple batches.
+pub const DEFAULT_MAX_OIDS_PER_REQUEST: usize = 10;
+
+/// Default max-repetitions for GETBULK operations.
+///
+/// Controls how many values are requested per GETBULK PDU during walks.
+pub const DEFAULT_MAX_REPETITIONS: u32 = 25;
+
 /// SNMP client.
 ///
 /// Generic over transport type, with `UdpHandle` as default.
@@ -118,14 +136,14 @@ impl Default for ClientConfig {
         Self {
             version: Version::V2c,
             community: Bytes::from_static(b"public"),
-            timeout: Duration::from_secs(5),
+            timeout: DEFAULT_TIMEOUT,
             retry: Retry::default(),
-            max_oids_per_request: 10,
+            max_oids_per_request: DEFAULT_MAX_OIDS_PER_REQUEST,
             v3_security: None,
             walk_mode: WalkMode::Auto,
             oid_ordering: OidOrdering::Strict,
             max_walk_results: None,
-            max_repetitions: 25,
+            max_repetitions: DEFAULT_MAX_REPETITIONS,
         }
     }
 }

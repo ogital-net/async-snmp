@@ -12,7 +12,10 @@ use bytes::Bytes;
 
 use crate::client::retry::Retry;
 use crate::client::walk::{OidOrdering, WalkMode};
-use crate::client::{Auth, ClientConfig, CommunityVersion, UsmConfig};
+use crate::client::{
+    Auth, ClientConfig, CommunityVersion, DEFAULT_MAX_OIDS_PER_REQUEST, DEFAULT_MAX_REPETITIONS,
+    DEFAULT_TIMEOUT, UsmConfig,
+};
 use crate::error::{Error, Result};
 use crate::transport::{TcpTransport, Transport, UdpHandle, UdpTransport};
 use crate::v3::EngineCache;
@@ -85,10 +88,10 @@ impl ClientBuilder {
         Self {
             target: target.into(),
             auth: auth.into(),
-            timeout: Duration::from_secs(5),
+            timeout: DEFAULT_TIMEOUT,
             retry: Retry::default(),
-            max_oids_per_request: 10,
-            max_repetitions: 25,
+            max_oids_per_request: DEFAULT_MAX_OIDS_PER_REQUEST,
+            max_repetitions: DEFAULT_MAX_REPETITIONS,
             walk_mode: WalkMode::Auto,
             oid_ordering: OidOrdering::Strict,
             max_walk_results: None,
@@ -529,10 +532,10 @@ mod tests {
     fn test_builder_defaults() {
         let builder = ClientBuilder::new("192.168.1.1:161", Auth::default());
         assert_eq!(builder.target, "192.168.1.1:161");
-        assert_eq!(builder.timeout, Duration::from_secs(5));
+        assert_eq!(builder.timeout, DEFAULT_TIMEOUT);
         assert_eq!(builder.retry.max_attempts, 3);
-        assert_eq!(builder.max_oids_per_request, 10);
-        assert_eq!(builder.max_repetitions, 25);
+        assert_eq!(builder.max_oids_per_request, DEFAULT_MAX_OIDS_PER_REQUEST);
+        assert_eq!(builder.max_repetitions, DEFAULT_MAX_REPETITIONS);
         assert_eq!(builder.walk_mode, WalkMode::Auto);
         assert_eq!(builder.oid_ordering, OidOrdering::Strict);
         assert!(builder.max_walk_results.is_none());
