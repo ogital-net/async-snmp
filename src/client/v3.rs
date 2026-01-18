@@ -272,6 +272,97 @@ impl<T: Transport> Client<T> {
         Ok(encoded)
     }
 
+    /// Verify HMAC authentication on a V3 response message.
+    fn verify_response_auth(&self, response_data: &[u8]) -> Result<()> {
+        tracing::trace!(target: "async_snmp::client", "verifying HMAC authentication on response");
+
+        let derived = self
+            .inner
+            .derived_keys
+            .read()
+            .expect("derived_keys lock poisoned");
+        let auth_key = derived
+            .as_ref()
+            .and_then(|d| d.auth_key.as_ref())
+            .ok_or_else(|| {
+                tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::NoAuthKey }, "authentication failed");
+                Error::Auth {
+                    target: self.peer_addr(),
+                }
+                .boxed()
+            })?;
+
+        let (offset, len) = UsmSecurityParams::find_auth_params_offset(response_data).ok_or_else(
+            || {
+                tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::AuthParamsNotFound }, "authentication failed");
+                Error::Auth {
+                    target: self.peer_addr(),
+                }
+                .boxed()
+            },
+        )?;
+
+        if !verify_message(auth_key, response_data, offset, len) {
+            tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::HmacMismatch }, "authentication failed");
+            return Err(Error::Auth {
+                target: self.peer_addr(),
+            }
+            .boxed());
+        }
+
+        tracing::trace!(target: "async_snmp::client", { auth_params_offset = offset, auth_params_len = len }, "HMAC verification successful");
+        Ok(())
+    }
+
+    /// Decrypt an encrypted V3 response and extract the PDU.
+    fn decrypt_response_pdu(&self, response: V3Message, security_params: &Bytes) -> Result<Pdu> {
+        match response.data {
+            crate::message::V3MessageData::Encrypted(ciphertext) => {
+                tracing::trace!(target: "async_snmp::client", { ciphertext_len = ciphertext.len() }, "decrypting response");
+
+                let derived = self
+                    .inner
+                    .derived_keys
+                    .read()
+                    .expect("derived_keys lock poisoned");
+                let priv_key =
+                    derived
+                        .as_ref()
+                        .and_then(|d| d.priv_key.as_ref())
+                        .ok_or_else(|| {
+                            tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %CryptoErrorKind::NoPrivKey }, "decryption failed");
+                            Error::Auth {
+                                target: self.peer_addr(),
+                            }
+                            .boxed()
+                        })?;
+
+                let usm_params = UsmSecurityParams::decode(security_params.clone())?;
+                let plaintext = priv_key
+                    .decrypt(
+                        &ciphertext,
+                        usm_params.engine_boots,
+                        usm_params.engine_time,
+                        &usm_params.priv_params,
+                    )
+                    .map_err(|e| {
+                        tracing::warn!(target: "async_snmp::crypto", { peer = %self.peer_addr(), error = %e }, "decryption failed");
+                        Error::Auth {
+                            target: self.peer_addr(),
+                        }
+                        .boxed()
+                    })?;
+
+                tracing::trace!(target: "async_snmp::client", { plaintext_len = plaintext.len() }, "decrypted response");
+
+                let mut decoder = Decoder::with_target(plaintext, self.peer_addr());
+                let scoped_pdu = ScopedPdu::decode(&mut decoder)?;
+                Ok(scoped_pdu.pdu)
+            }
+            crate::message::V3MessageData::Plaintext(scoped_pdu) => Ok(scoped_pdu.pdu),
+        }
+    }
+
     /// Send a V3 request and handle the response.
     #[instrument(
         level = "debug",
@@ -331,46 +422,11 @@ impl<T: Transport> Client<T> {
 
                     // Verify authentication if required
                     if security_level.requires_auth() {
-                        tracing::trace!(target: "async_snmp::client", "verifying HMAC authentication on response");
-
-                        let derived = self
-                            .inner
-                            .derived_keys
-                            .read()
-                            .expect("derived_keys lock poisoned");
-                        let auth_key = derived
-                            .as_ref()
-                            .and_then(|d| d.auth_key.as_ref())
-                            .ok_or_else(|| {
-                                tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::NoAuthKey }, "authentication failed");
-                                Error::Auth {
-                                    target: self.peer_addr(),
-                                }
-                                .boxed()
-                            })?;
-
-                        if let Some((offset, len)) =
-                            UsmSecurityParams::find_auth_params_offset(&response_data)
-                        {
-                            if !verify_message(auth_key, &response_data, offset, len) {
-                                tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::HmacMismatch }, "authentication failed");
-                                return Err(Error::Auth {
-                                    target: self.peer_addr(),
-                                }
-                                .boxed());
-                            }
-                            tracing::trace!(target: "async_snmp::client", { auth_params_offset = offset, auth_params_len = len }, "HMAC verification successful");
-                        } else {
-                            tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %AuthErrorKind::AuthParamsNotFound }, "authentication failed");
-                            return Err(Error::Auth {
-                                target: self.peer_addr(),
-                            }
-                            .boxed());
-                        }
+                        self.verify_response_auth(&response_data)?;
                     }
 
                     // Decode response
-                    let response = V3Message::decode(response_data.clone())?;
+                    let response = V3Message::decode(response_data)?;
 
                     // Check for Report PDU (error response)
                     if let Some(scoped_pdu) = response.scoped_pdu()
@@ -431,55 +487,9 @@ impl<T: Transport> Client<T> {
                     // Extract security params before consuming response
                     let response_security_params = response.security_params.clone();
 
-                    // Handle encrypted response
+                    // Extract PDU (with decryption if required)
                     let response_pdu = if security_level.requires_priv() {
-                        match response.data {
-                            crate::message::V3MessageData::Encrypted(ciphertext) => {
-                                tracing::trace!(target: "async_snmp::client", { ciphertext_len = ciphertext.len() }, "decrypting response");
-
-                                // Decrypt
-                                let derived = self
-                                    .inner
-                                    .derived_keys
-                                    .read()
-                                    .expect("derived_keys lock poisoned");
-                                let priv_key = derived
-                                    .as_ref()
-                                    .and_then(|d| d.priv_key.as_ref())
-                                    .ok_or_else(|| {
-                                    tracing::warn!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %CryptoErrorKind::NoPrivKey }, "decryption failed");
-                                    Error::Auth {
-                                        target: self.peer_addr(),
-                                    }
-                                    .boxed()
-                                })?;
-
-                                let usm_params =
-                                    UsmSecurityParams::decode(response_security_params.clone())?;
-                                let plaintext = priv_key
-                                    .decrypt(
-                                        &ciphertext,
-                                        usm_params.engine_boots,
-                                        usm_params.engine_time,
-                                        &usm_params.priv_params,
-                                    )
-                                    .map_err(|e| {
-                                        tracing::warn!(target: "async_snmp::crypto", { peer = %self.peer_addr(), error = %e }, "decryption failed");
-                                        Error::Auth {
-                                            target: self.peer_addr(),
-                                        }
-                                        .boxed()
-                                    })?;
-
-                                tracing::trace!(target: "async_snmp::client", { plaintext_len = plaintext.len() }, "decrypted response");
-
-                                // Decode scoped PDU
-                                let mut decoder = Decoder::with_target(plaintext, self.peer_addr());
-                                let scoped_pdu = ScopedPdu::decode(&mut decoder)?;
-                                scoped_pdu.pdu
-                            }
-                            crate::message::V3MessageData::Plaintext(scoped_pdu) => scoped_pdu.pdu,
-                        }
+                        self.decrypt_response_pdu(response, &response_security_params)?
                     } else {
                         response.into_pdu().ok_or_else(|| {
                             tracing::debug!(target: "async_snmp::client", { peer = %self.peer_addr(), kind = %DecodeErrorKind::MissingPdu }, "missing PDU in response");
