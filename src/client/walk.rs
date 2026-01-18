@@ -1,5 +1,8 @@
 //! Walk stream implementations.
 
+// Allow complex types for boxed futures in manual Stream implementations.
+// The `pending` fields require `Option<Pin<Box<dyn Future<Output = ...> + Send>>>`
+// which triggers this lint but is the standard pattern for storing futures.
 #![allow(clippy::type_complexity)]
 
 use std::collections::{HashSet, VecDeque};
