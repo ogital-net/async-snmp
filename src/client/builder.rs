@@ -56,8 +56,6 @@ pub struct ClientBuilder {
     oid_ordering: OidOrdering,
     max_walk_results: Option<usize>,
     engine_cache: Option<Arc<EngineCache>>,
-    /// Override context engine ID (V3 only, for proxy/routing scenarios).
-    context_engine_id: Option<Vec<u8>>,
 }
 
 impl ClientBuilder {
@@ -95,7 +93,6 @@ impl ClientBuilder {
             oid_ordering: OidOrdering::Strict,
             max_walk_results: None,
             engine_cache: None,
-            context_engine_id: None,
         }
     }
 
@@ -304,20 +301,6 @@ impl ClientBuilder {
     /// ```
     pub fn engine_cache(mut self, cache: Arc<EngineCache>) -> Self {
         self.engine_cache = Some(cache);
-        self
-    }
-
-    /// Override the context engine ID (V3 only).
-    ///
-    /// By default, the context engine ID is the same as the authoritative
-    /// engine ID discovered during engine discovery. Use this to override for:
-    /// - Proxy scenarios where requests route through an intermediate agent
-    /// - Devices that require a specific context engine ID
-    /// - Pre-configured engine IDs from device documentation
-    ///
-    /// The engine ID should be provided as raw bytes (not hex-encoded).
-    pub fn context_engine_id(mut self, engine_id: impl Into<Vec<u8>>) -> Self {
-        self.context_engine_id = Some(engine_id.into());
         self
     }
 
@@ -555,7 +538,6 @@ mod tests {
         assert_eq!(builder.oid_ordering, OidOrdering::Strict);
         assert!(builder.max_walk_results.is_none());
         assert!(builder.engine_cache.is_none());
-        assert!(builder.context_engine_id.is_none());
     }
 
     #[test]
@@ -569,8 +551,7 @@ mod tests {
             .walk_mode(WalkMode::GetNext)
             .oid_ordering(OidOrdering::AllowNonIncreasing)
             .max_walk_results(1000)
-            .engine_cache(cache.clone())
-            .context_engine_id(vec![0x80, 0x00, 0x01]);
+            .engine_cache(cache.clone());
 
         assert_eq!(builder.timeout, Duration::from_secs(10));
         assert_eq!(builder.retry.max_attempts, 5);
@@ -580,7 +561,6 @@ mod tests {
         assert_eq!(builder.oid_ordering, OidOrdering::AllowNonIncreasing);
         assert_eq!(builder.max_walk_results, Some(1000));
         assert!(builder.engine_cache.is_some());
-        assert_eq!(builder.context_engine_id, Some(vec![0x80, 0x00, 0x01]));
     }
 
     #[test]
