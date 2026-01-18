@@ -2,7 +2,7 @@
 
 #![allow(clippy::type_complexity)]
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -256,9 +256,7 @@ pub struct BulkWalk<T: Transport> {
     count: usize,
     done: bool,
     /// Buffered results from the last GETBULK response
-    buffer: Vec<VarBind>,
-    /// Index into the buffer
-    buffer_idx: usize,
+    buffer: VecDeque<VarBind>,
     pending: Option<Pin<Box<dyn std::future::Future<Output = Result<Vec<VarBind>>> + Send>>>,
 }
 
@@ -279,8 +277,7 @@ impl<T: Transport> BulkWalk<T> {
             max_results,
             count: 0,
             done: false,
-            buffer: Vec::new(),
-            buffer_idx: 0,
+            buffer: VecDeque::new(),
             pending: None,
         }
     }
@@ -320,10 +317,7 @@ impl<T: Transport + 'static> Stream for BulkWalk<T> {
             }
 
             // Check if we have buffered results to return
-            if self.buffer_idx < self.buffer.len() {
-                let vb = self.buffer[self.buffer_idx].clone();
-                self.buffer_idx += 1;
-
+            if let Some(vb) = self.buffer.pop_front() {
                 // Check for end conditions
                 if matches!(vb.value, Value::EndOfMibView) {
                     self.done = true;
@@ -374,8 +368,7 @@ impl<T: Transport + 'static> Stream for BulkWalk<T> {
                                 return Poll::Ready(None);
                             }
 
-                            self.buffer = varbinds;
-                            self.buffer_idx = 0;
+                            self.buffer = varbinds.into();
                             // Continue loop to process buffer
                         }
                         Err(e) => {
