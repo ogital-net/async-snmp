@@ -419,7 +419,7 @@ pub mod cli;
 pub use agent::{Agent, AgentBuilder, VacmBuilder, VacmConfig, View};
 pub use client::{
     Auth, Backoff, BulkWalk, Client, ClientBuilder, ClientConfig, CommunityVersion, OidOrdering,
-    Retry, RetryBuilder, UsmAuth, UsmBuilder, V3SecurityConfig, Walk, WalkMode, WalkStream,
+    Retry, RetryBuilder, UsmAuth, UsmBuilder, Walk, WalkMode, WalkStream,
 };
 pub use error::{Error, ErrorStatus, Result, WalkAbortReason};
 pub use handler::{

@@ -12,7 +12,7 @@ use bytes::Bytes;
 
 use crate::client::retry::Retry;
 use crate::client::walk::{OidOrdering, WalkMode};
-use crate::client::{Auth, ClientConfig, CommunityVersion, V3SecurityConfig};
+use crate::client::{Auth, ClientConfig, CommunityVersion, UsmConfig};
 use crate::error::{Error, Result};
 use crate::transport::{TcpTransport, Transport, UdpHandle, UdpTransport};
 use crate::v3::EngineCache;
@@ -375,8 +375,7 @@ impl ClientBuilder {
                 }
             }
             Auth::Usm(usm) => {
-                let mut security =
-                    V3SecurityConfig::new(Bytes::copy_from_slice(usm.username.as_bytes()));
+                let mut security = UsmConfig::new(Bytes::copy_from_slice(usm.username.as_bytes()));
 
                 // Prefer master_keys over passwords if available
                 if let Some(ref master_keys) = usm.master_keys {

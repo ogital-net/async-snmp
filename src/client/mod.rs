@@ -59,8 +59,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 use tracing::{Span, instrument};
 
-pub use crate::notification::DerivedKeys;
-pub use v3::V3SecurityConfig;
+pub use crate::notification::{DerivedKeys, UsmConfig};
 pub use walk::{BulkWalk, OidOrdering, Walk, WalkMode, WalkStream};
 
 /// SNMP client.
@@ -100,7 +99,7 @@ pub struct ClientConfig {
     /// Maximum OIDs per request (default: 10)
     pub max_oids_per_request: usize,
     /// SNMPv3 security configuration (default: None)
-    pub v3_security: Option<V3SecurityConfig>,
+    pub v3_security: Option<UsmConfig>,
     /// Walk operation mode (default: Auto)
     pub walk_mode: WalkMode,
     /// OID ordering behavior during walk operations (default: Strict)

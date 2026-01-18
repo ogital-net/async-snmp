@@ -8,7 +8,6 @@ use crate::error::internal::{AuthErrorKind, CryptoErrorKind, DecodeErrorKind, En
 use crate::error::{Error, ErrorStatus, Result};
 use crate::format::hex;
 use crate::message::{MsgFlags, MsgGlobalData, ScopedPdu, V3Message};
-use crate::notification::UsmConfig;
 use crate::pdu::{Pdu, PduType};
 use crate::transport::Transport;
 use crate::v3::{
@@ -21,11 +20,6 @@ use std::time::Instant;
 use tracing::{Span, instrument};
 
 use super::Client;
-
-/// Type alias for backward compatibility.
-///
-/// Use [`UsmConfig`] directly for new code.
-pub type V3SecurityConfig = UsmConfig;
 
 // V3-specific Client implementation
 impl<T: Transport> Client<T> {
