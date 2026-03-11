@@ -35,6 +35,12 @@ impl SharedEnv {
     fn new() -> Self {
         let runtime = Runtime::new().expect("failed to create runtime");
         let agent = runtime.block_on(TestAgent::new());
+        // dual-stack on linux, IPv4 on other platforms for better compatibility
+        #[cfg(not(target_os = "linux"))]
+        let transport = runtime
+            .block_on(UdpTransport::bind("0.0.0.0:0"))
+            .expect("bind transport");
+        #[cfg(target_os = "linux")]
         let transport = runtime
             .block_on(UdpTransport::bind("[::]:0"))
             .expect("bind transport");
